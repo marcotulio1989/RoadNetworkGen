@@ -747,8 +747,8 @@ const App: React.FC = () => {
         // This will fix the "stretching" issue by ensuring the view scales
         // uniformly based on the canvas dimensions.
         const smallerDimension = Math.min(canvasWidth, canvasHeight);
-        // This sets the scale so that a world view of 8000 units fits into the smaller dimension.
-        transformRef.current.scale = smallerDimension / 8000;
+        // This sets the scale so that a world view of 730 units (approx. 20 meters) fits into the smaller dimension.
+        transformRef.current.scale = smallerDimension / 730;
 
         if (segments.length === 0) {
             transformRef.current.x = canvasWidth / 2;
