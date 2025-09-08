@@ -560,6 +560,7 @@ const App: React.FC = () => {
     
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const transformRef = useRef({ x: 0, y: 0, scale: 1 });
+    const networkCenterRef = useRef<Point>({ x: 0, y: 0 });
     const isPanningRef = useRef(false);
     const lastMousePosRef = useRef<Point>({ x: 0, y: 0 });
 
@@ -603,6 +604,12 @@ const App: React.FC = () => {
             ctx.lineTo(seg.r.end.x, seg.r.end.y);
         });
         ctx.stroke();
+
+        // Draw the character for scale
+        ctx.fillStyle = 'red';
+        const { x: centerX, y: centerY } = networkCenterRef.current;
+        const characterSize = 64 / transformRef.current.scale;
+        ctx.fillRect(centerX - characterSize / 2, centerY - characterSize / 2, characterSize, characterSize);
         
         ctx.restore();
     }, [segments, canvasSize]);
@@ -647,6 +654,7 @@ const App: React.FC = () => {
         const networkHeight = (maxY - minY) || 1;
         const networkCenterX = minX + networkWidth / 2;
         const networkCenterY = minY + networkHeight / 2;
+        networkCenterRef.current = { x: networkCenterX, y: networkCenterY };
 
         const padding = 0.9;
         const scale = Math.min(canvasWidth / networkWidth, canvasHeight / networkHeight) * padding;
