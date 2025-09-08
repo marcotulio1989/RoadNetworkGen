@@ -113,6 +113,18 @@ html, body, #root {
     cursor: grabbing;
 }
 
+.minimap {
+  position: absolute;
+  bottom: 1rem;
+  right: 1rem;
+  width: 200px;
+  height: 150px;
+  border: 1px solid var(--border-color);
+  background-color: var(--surface-color);
+  border-radius: 4px;
+  z-index: 10;
+}
+
 canvas {
   display: block;
   width: 100%;

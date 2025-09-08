@@ -680,11 +680,108 @@ const App: React.FC = () => {
     const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
     
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const minimapCanvasRef = useRef<HTMLCanvasElement>(null);
     const transformRef = useRef({ x: 0, y: 0, scale: 1 });
     const animationFrameId = useRef<number | null>(null);
     const lastTimestamp = useRef(0);
 
     const { updateCharacter, drawCharacter, characterState } = useCharacter();
+
+    const drawMinimap = useCallback(() => {
+        const minimapCanvas = minimapCanvasRef.current;
+        if (!minimapCanvas || segments.length === 0) return;
+
+        const minimapCtx = minimapCanvas.getContext('2d');
+        if (!minimapCtx) return;
+
+        const { width, height } = minimapCanvas;
+        minimapCanvas.width = width;
+        minimapCanvas.height = height;
+
+        // 1. Find bounds of all roads
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        segments.forEach(seg => {
+            minX = Math.min(minX, seg.r.start.x, seg.r.end.x);
+            minY = Math.min(minY, seg.r.start.y, seg.r.end.y);
+            maxX = Math.max(maxX, seg.r.start.x, seg.r.end.x);
+            maxY = Math.max(maxY, seg.r.start.y, seg.r.end.y);
+        });
+
+        // Add some padding
+        const padding = 2000;
+        minX -= padding;
+        minY -= padding;
+        maxX += padding;
+        maxY += padding;
+
+        const mapWidth = maxX - minX;
+        const mapHeight = maxY - minY;
+
+        // 2. Calculate scale and offset
+        const scaleX = width / mapWidth;
+        const scaleY = height / mapHeight;
+        const scale = Math.min(scaleX, scaleY);
+
+        const offsetX = (width - mapWidth * scale) / 2 - minX * scale;
+        const offsetY = (height - mapHeight * scale) / 2 - minY * scale;
+
+        minimapCtx.clearRect(0, 0, width, height);
+        minimapCtx.save();
+        minimapCtx.translate(offsetX, offsetY);
+        minimapCtx.scale(scale, scale);
+
+        // 3. Draw roads
+        const normalRoads = segments.filter(s => !s.q.highway);
+        const highways = segments.filter(s => s.q.highway);
+
+        const roadWidth = defaultConfig.DEFAULT_SEGMENT_WIDTH / 4;
+        const highwayWidth = defaultConfig.HIGHWAY_SEGMENT_WIDTH / 4;
+
+        minimapCtx.strokeStyle = 'var(--road-color)';
+        minimapCtx.lineWidth = roadWidth;
+        minimapCtx.lineCap = "round";
+        minimapCtx.beginPath();
+        normalRoads.forEach(seg => {
+            minimapCtx.moveTo(seg.r.start.x, seg.r.start.y);
+            minimapCtx.lineTo(seg.r.end.x, seg.r.end.y);
+        });
+        minimapCtx.stroke();
+
+        minimapCtx.strokeStyle = 'var(--highway-color)';
+        minimapCtx.lineWidth = highwayWidth;
+        minimapCtx.lineCap = "round";
+        minimapCtx.beginPath();
+        highways.forEach(seg => {
+            minimapCtx.moveTo(seg.r.start.x, seg.r.start.y);
+            minimapCtx.lineTo(seg.r.end.x, seg.r.end.y);
+        });
+        minimapCtx.stroke();
+
+        // 4. Draw character
+        const charPos = characterState.current.position;
+        if (charPos) {
+            minimapCtx.fillStyle = 'red';
+            minimapCtx.beginPath();
+            minimapCtx.arc(charPos.x, charPos.y, 150, 0, 2 * Math.PI);
+            minimapCtx.fill();
+        }
+
+        // 5. Draw viewport
+        const mainTransform = transformRef.current;
+        const { width: mainWidth, height: mainHeight } = canvasSize;
+
+        const viewRectWorldX = (mainWidth / 2 - mainTransform.x) / mainTransform.scale - mainWidth / (2 * mainTransform.scale);
+        const viewRectWorldY = (mainHeight / 2 - mainTransform.y) / mainTransform.scale - mainHeight / (2 * mainTransform.scale);
+        const viewRectWorldWidth = mainWidth / mainTransform.scale;
+        const viewRectWorldHeight = mainHeight / mainTransform.scale;
+
+        minimapCtx.strokeStyle = 'white';
+        minimapCtx.lineWidth = 150;
+        minimapCtx.strokeRect(viewRectWorldX, viewRectWorldY, viewRectWorldWidth, viewRectWorldHeight);
+
+        minimapCtx.restore();
+
+    }, [segments, characterState, canvasSize]);
 
     const draw = useCallback(() => {
         const canvas = canvasRef.current;
@@ -732,7 +829,9 @@ const App: React.FC = () => {
         drawCharacter(ctx, transformRef.current);
 
         ctx.restore();
-    }, [segments, canvasSize, drawCharacter]);
+
+        drawMinimap();
+    }, [segments, canvasSize, drawCharacter, drawMinimap]);
 
     const gameLoop = useCallback((timestamp: number) => {
         const deltaTime = (timestamp - lastTimestamp.current) / 1000;
@@ -844,6 +943,10 @@ const App: React.FC = () => {
                 )}
                 <canvas
                     ref={canvasRef}
+                />
+                <canvas
+                    ref={minimapCanvasRef}
+                    className="minimap"
                 />
             </div>
             {logs.length > 0 && (
