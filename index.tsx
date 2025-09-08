@@ -621,7 +621,7 @@ const useCharacter = () => {
         const state = characterState.current;
         if (!state.position) return;
 
-        const carSize = 64 / transform.scale;
+        const carSize = 64;
 
         ctx.save();
         ctx.translate(state.position.x, state.position.y);
@@ -681,7 +681,8 @@ const App: React.FC = () => {
 
         // Draw normal roads
         ctx.strokeStyle = 'var(--road-color)';
-        ctx.lineWidth = 1.5 / scale;
+        ctx.lineWidth = defaultConfig.DEFAULT_SEGMENT_WIDTH;
+        ctx.lineCap = "round";
         ctx.beginPath();
         normalRoads.forEach(seg => {
             ctx.moveTo(seg.r.start.x, seg.r.start.y);
@@ -691,7 +692,8 @@ const App: React.FC = () => {
 
         // Draw highways
         ctx.strokeStyle = 'var(--highway-color)';
-        ctx.lineWidth = 4 / scale;
+        ctx.lineWidth = defaultConfig.HIGHWAY_SEGMENT_WIDTH;
+        ctx.lineCap = "round";
         ctx.beginPath();
         highways.forEach(seg => {
             ctx.moveTo(seg.r.start.x, seg.r.start.y);
@@ -741,8 +743,12 @@ const App: React.FC = () => {
         const { width: canvasWidth, height: canvasHeight } = canvasSize;
         if (canvasWidth === 0 || canvasHeight === 0) return;
 
-        // Set a fixed scale instead of calculating it.
-        transformRef.current.scale = 0.5;
+        // I am removing the fixed scale and calculating it dynamically.
+        // This will fix the "stretching" issue by ensuring the view scales
+        // uniformly based on the canvas dimensions.
+        const smallerDimension = Math.min(canvasWidth, canvasHeight);
+        // This sets the scale so that a world view of 8000 units fits into the smaller dimension.
+        transformRef.current.scale = smallerDimension / 8000;
 
         if (segments.length === 0) {
             transformRef.current.x = canvasWidth / 2;
