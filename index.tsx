@@ -613,7 +613,7 @@ const useCharacter = () => {
         if (dx !== 0 || dy !== 0) {
             state.position.x += dx;
             state.position.y += dy;
-            state.rotation = Math.atan2(dy, dx) * 180 / Math.PI + 90;
+            state.rotation = Math.atan2(dy, dx) * 180 / Math.PI;
         }
     };
 
