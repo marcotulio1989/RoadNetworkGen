@@ -987,127 +987,110 @@ const App: React.FC = () => {
         ctx.translate(x, y);
         ctx.scale(scale, scale);
 
-        // --- NEW RENDERING LOGIC ---
+        // --- NEW SIMPLIFIED RENDERING LOGIC ---
 
-        type Renderable = {
-            zIndex: number;
-            type: 'road' | 'building' | 'character';
-            data: Segment | Building | { position: Point };
+        const drawRoads = () => {
+            const normalRoads = segments.filter(s => !s.q.highway);
+            const highways = segments.filter(s => s.q.highway);
+
+            const drawRoadsAsPolygons = (roads: Segment[], color: string) => {
+                ctx.fillStyle = color;
+                roads.forEach(seg => {
+                    const vec = math.subtractPoints(seg.r.end, seg.r.start);
+                    const length = Math.sqrt(vec.x * vec.x + vec.y * vec.y);
+                    if (length === 0) return;
+                    const perp = { x: -vec.y / length, y: vec.x / length };
+                    const halfWidth = seg.width / 2;
+                    const p1 = { x: seg.r.start.x + perp.x * halfWidth, y: seg.r.start.y + perp.y * halfWidth };
+                    const p2 = { x: seg.r.start.x - perp.x * halfWidth, y: seg.r.start.y - perp.y * halfWidth };
+                    const p3 = { x: seg.r.end.x - perp.x * halfWidth, y: seg.r.end.y - perp.y * halfWidth };
+                    const p4 = { x: seg.r.end.x + perp.x * halfWidth, y: seg.r.end.y + perp.y * halfWidth };
+                    const iso_p1 = math.toIsometric(p1);
+                    const iso_p2 = math.toIsometric(p2);
+                    const iso_p3 = math.toIsometric(p3);
+                    const iso_p4 = math.toIsometric(p4);
+                    ctx.beginPath();
+                    ctx.moveTo(iso_p1.x, iso_p1.y);
+                    ctx.lineTo(iso_p2.x, iso_p2.y);
+                    ctx.lineTo(iso_p3.x, iso_p3.y);
+                    ctx.lineTo(iso_p4.x, iso_p4.y);
+                    ctx.closePath();
+                    ctx.fill();
+                });
+            };
+
+            drawRoadsAsPolygons(highways, 'var(--highway-color)');
+            drawRoadsAsPolygons(normalRoads, 'var(--road-color)');
         };
 
-        const renderables: Renderable[] = [];
+        const drawBuildingsAndCharacter = () => {
+            type Renderable = {
+                zIndex: number;
+                type: 'building' | 'character';
+                data: Building | { position: Point };
+            };
+            const renderables: Renderable[] = [];
 
-        // 1. Collect all renderable objects
-        segments.forEach(seg => {
-            const centerX = (seg.r.start.x + seg.r.end.x) / 2;
-            const centerY = (seg.r.start.y + seg.r.end.y) / 2;
-            renderables.push({
-                zIndex: centerX + centerY,
-                type: 'road',
-                data: seg,
+            buildings.forEach(b => {
+                const centerX = b.footprint.reduce((sum, p) => sum + p.x, 0) / 4;
+                const centerY = b.footprint.reduce((sum, p) => sum + p.y, 0) / 4;
+                renderables.push({ zIndex: centerX + centerY, type: 'building', data: b });
             });
-        });
 
-        buildings.forEach(b => {
-            const centerX = b.footprint.reduce((sum, p) => sum + p.x, 0) / 4;
-            const centerY = b.footprint.reduce((sum, p) => sum + p.y, 0) / 4;
-            renderables.push({
-                zIndex: centerX + centerY,
-                type: 'building',
-                data: b,
-            });
-        });
-
-        if (characterState.current.position) {
-            const charPos = characterState.current.position;
-            renderables.push({
-                zIndex: charPos.x + charPos.y,
-                type: 'character',
-                data: { position: charPos }
-            });
-        }
-
-        // 2. Sort objects by zIndex
-        renderables.sort((a, b) => a.zIndex - b.zIndex);
-
-        // 3. Define drawing functions for individual objects
-        const drawSingleBuilding = (building: Building) => {
-            const { footprint, height } = building;
-            const base_iso = footprint.map(math.toIsometric);
-            const top_iso = footprint.map(p => {
-                const iso = math.toIsometric(p);
-                iso.y -= height;
-                return iso;
-            });
-            ctx.strokeStyle = '#222222';
-            ctx.lineWidth = 2;
-            ctx.fillStyle = '#555555'; // right face
-            ctx.beginPath();
-            ctx.moveTo(base_iso[1].x, base_iso[1].y);
-            ctx.lineTo(base_iso[2].x, base_iso[2].y);
-            ctx.lineTo(top_iso[2].x, top_iso[2].y);
-            ctx.lineTo(top_iso[1].x, top_iso[1].y);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            ctx.fillStyle = '#666666'; // bottom face
-            ctx.beginPath();
-            ctx.moveTo(base_iso[2].x, base_iso[2].y);
-            ctx.lineTo(base_iso[3].x, base_iso[3].y);
-            ctx.lineTo(top_iso[3].x, top_iso[3].y);
-            ctx.lineTo(top_iso[2].x, top_iso[2].y);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            ctx.fillStyle = '#8a8a8a'; // top face
-            ctx.beginPath();
-            ctx.moveTo(top_iso[0].x, top_iso[0].y);
-            ctx.lineTo(top_iso[1].x, top_iso[1].y);
-            ctx.lineTo(top_iso[2].x, top_iso[2].y);
-            ctx.lineTo(top_iso[3].x, top_iso[3].y);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-        };
-
-        const drawSingleRoad = (seg: Segment) => {
-            ctx.fillStyle = seg.q.highway ? 'var(--highway-color)' : 'var(--road-color)';
-            const vec = math.subtractPoints(seg.r.end, seg.r.start);
-            const length = Math.sqrt(vec.x * vec.x + vec.y * vec.y);
-            if (length === 0) return;
-            const perp = { x: -vec.y / length, y: vec.x / length };
-            const halfWidth = seg.width / 2;
-            const p1 = { x: seg.r.start.x + perp.x * halfWidth, y: seg.r.start.y + perp.y * halfWidth };
-            const p2 = { x: seg.r.start.x - perp.x * halfWidth, y: seg.r.start.y - perp.y * halfWidth };
-            const p3 = { x: seg.r.end.x - perp.x * halfWidth, y: seg.r.end.y - perp.y * halfWidth };
-            const p4 = { x: seg.r.end.x + perp.x * halfWidth, y: seg.r.end.y + perp.y * halfWidth };
-            const iso_p1 = math.toIsometric(p1);
-            const iso_p2 = math.toIsometric(p2);
-            const iso_p3 = math.toIsometric(p3);
-            const iso_p4 = math.toIsometric(p4);
-            ctx.beginPath();
-            ctx.moveTo(iso_p1.x, iso_p1.y);
-            ctx.lineTo(iso_p2.x, iso_p2.y);
-            ctx.lineTo(iso_p3.x, iso_p3.y);
-            ctx.lineTo(iso_p4.x, iso_p4.y);
-            ctx.closePath();
-            ctx.fill();
-        };
-
-        // 4. Render all objects in sorted order
-        renderables.forEach(r => {
-            switch (r.type) {
-                case 'road':
-                    drawSingleRoad(r.data as Segment);
-                    break;
-                case 'building':
-                    drawSingleBuilding(r.data as Building);
-                    break;
-                case 'character':
-                    drawCharacter(ctx, transformRef.current); // drawCharacter already has all its logic
-                    break;
+            if (characterState.current.position) {
+                const charPos = characterState.current.position;
+                renderables.push({ zIndex: charPos.x + charPos.y, type: 'character', data: { position: charPos } });
             }
-        });
+
+            renderables.sort((a, b) => a.zIndex - b.zIndex);
+
+            renderables.forEach(r => {
+                if (r.type === 'building') {
+                    const building = r.data as Building;
+                    const { footprint, height } = building;
+                    const base_iso = footprint.map(math.toIsometric);
+                    const top_iso = footprint.map(p => {
+                        const iso = math.toIsometric(p);
+                        iso.y -= height;
+                        return iso;
+                    });
+                    ctx.strokeStyle = '#222222';
+                    ctx.lineWidth = 2;
+                    ctx.fillStyle = '#555555';
+                    ctx.beginPath();
+                    ctx.moveTo(base_iso[1].x, base_iso[1].y);
+                    ctx.lineTo(base_iso[2].x, base_iso[2].y);
+                    ctx.lineTo(top_iso[2].x, top_iso[2].y);
+                    ctx.lineTo(top_iso[1].x, top_iso[1].y);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.stroke();
+                    ctx.fillStyle = '#666666';
+                    ctx.beginPath();
+                    ctx.moveTo(base_iso[2].x, base_iso[2].y);
+                    ctx.lineTo(base_iso[3].x, base_iso[3].y);
+                    ctx.lineTo(top_iso[3].x, top_iso[3].y);
+                    ctx.lineTo(top_iso[2].x, top_iso[2].y);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.stroke();
+                    ctx.fillStyle = '#8a8a8a';
+                    ctx.beginPath();
+                    ctx.moveTo(top_iso[0].x, top_iso[0].y);
+                    ctx.lineTo(top_iso[1].x, top_iso[1].y);
+                    ctx.lineTo(top_iso[2].x, top_iso[2].y);
+                    ctx.lineTo(top_iso[3].x, top_iso[3].y);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.stroke();
+                } else if (r.type === 'character') {
+                    drawCharacter(ctx, transformRef.current);
+                }
+            });
+        };
+
+        drawRoads();
+        drawBuildingsAndCharacter();
 
         ctx.restore();
 
