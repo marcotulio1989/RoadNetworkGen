@@ -440,7 +440,7 @@ function localConstraints(segment: Segment, segments: Segment[], qTree: Quadtree
 }
 
 const globalGoals = {
-    generate: (previousSegment: Segment, config: typeof defaultConfig, heatmap: any) => {
+    generate: (previousSegment: Segment, config: typeof defaultConfig, heatmap: any, log: (message: string) => void) => {
         const newBranches: Segment[] = [];
         if (previousSegment.q.severed) {
             return newBranches;
@@ -449,6 +449,7 @@ const globalGoals = {
         const template = (direction: number, length: number, t: number, q: Q) => segmentFactory.usingDirection(previousSegment.r.end, direction, length, t, q);
         const continueStraight = template(previousSegment.dir(), previousSegment.length(), 0, previousSegment.q);
         const straightPop = heatmap.popOnRoad(continueStraight.r);
+        log(`  - Straight pop: ${straightPop.toFixed(3)} (Threshold: ${config.NORMAL_BRANCH_POPULATION_THRESHOLD})`);
 
         if (previousSegment.q.highway) {
             const randomStraight = template(previousSegment.dir() + config.RANDOM_STRAIGHT_ANGLE(), previousSegment.length(), 0, previousSegment.q);
@@ -461,18 +462,22 @@ const globalGoals = {
                 newBranches.push(continueStraight);
                 roadPop = straightPop;
             }
+            log(`  - Highway road pop: ${roadPop.toFixed(3)} (Threshold: ${config.HIGHWAY_BRANCH_POPULATION_THRESHOLD})`);
             if (roadPop > config.HIGHWAY_BRANCH_POPULATION_THRESHOLD && Math.random() < config.HIGHWAY_BRANCH_PROBABILITY) {
                 const angle = previousSegment.dir() + (Math.random() > 0.5 ? 90 : -90) + config.RANDOM_BRANCH_ANGLE();
                 newBranches.push(template(angle, previousSegment.length(), 0, { highway: true }));
+                log(`  - SUCCESS: Highway branching condition met.`);
             }
         } else if (straightPop > config.NORMAL_BRANCH_POPULATION_THRESHOLD) {
             newBranches.push(continueStraight);
+            log(`  - SUCCESS: Normal road continuation condition met.`);
         }
 
         if (straightPop > config.NORMAL_BRANCH_POPULATION_THRESHOLD && Math.random() < config.DEFAULT_BRANCH_PROBABILITY) {
             const angle = previousSegment.dir() + (Math.random() > 0.5 ? 90 : -90) + config.RANDOM_BRANCH_ANGLE();
             const branchTime = previousSegment.q.highway ? config.NORMAL_BRANCH_TIME_DELAY_FROM_HIGHWAY : 0;
             newBranches.push(template(angle, config.DEFAULT_SEGMENT_LENGTH, branchTime, {}));
+            log(`  - SUCCESS: Default branching condition met.`);
         }
 
         newBranches.forEach(branch => {
@@ -493,6 +498,11 @@ const globalGoals = {
 };
 
 function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
+    const logs: string[] = [];
+    const log = (message: string) => {
+        logs.push(message);
+    };
+
     segmentCounter = 0;
     const config = { ...defaultConfig, ...options };
     const random = new SeededRandom(seed);
@@ -520,22 +530,38 @@ function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
     rootSegment.links.b.push(oppositeDirection);
     priorityQ.push(rootSegment, oppositeDirection);
 
+    log("Starting road generation...");
+
     while (priorityQ.length > 0 && segments.length < config.SEGMENT_COUNT_LIMIT) {
         priorityQ.sort((a, b) => a.t - b.t);
         const minSegment = priorityQ.shift()!;
         
+        log(`---\nProcessing segment ${minSegment.id}. Queue: ${priorityQ.length}, Segments: ${segments.length}`);
+
         const accepted = localConstraints(minSegment, segments, qTree, config);
         if (accepted) {
             if (minSegment.setupBranchLinks) minSegment.setupBranchLinks();
             addSegment(minSegment, segments, qTree);
-            const newBranches = globalGoals.generate(minSegment, config, heatmap);
+
+            log(`Segment ${minSegment.id} accepted. Generating branches...`);
+            const newBranches = globalGoals.generate(minSegment, config, heatmap, log);
+
+            if (newBranches.length > 0) {
+                log(`-> Created ${newBranches.length} new branches.`);
+            } else {
+                log(`-> No branches created for segment ${minSegment.id}.`);
+            }
+
             newBranches.forEach(branch => {
                 branch.t = minSegment.t + 1 + branch.t;
                 priorityQ.push(branch);
             });
+        } else {
+            log(`Segment ${minSegment.id} rejected by local constraints.`);
         }
     }
-    return { segments };
+    log("Finished road generation.");
+    return { segments, logs };
 }
 
 
@@ -648,6 +674,8 @@ const useCharacter = () => {
 const App: React.FC = () => {
     const [seed, setSeed] = useState<string>('city');
     const [segments, setSegments] = useState<Segment[]>([]);
+    const [logs, setLogs] = useState<string[]>([]);
+    const [charPos, setCharPos] = useState<Point>({ x: 0, y: 0 });
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
     
@@ -711,6 +739,7 @@ const App: React.FC = () => {
         lastTimestamp.current = timestamp;
 
         updateCharacter(deltaTime);
+        setCharPos({ ...characterState.current.position });
 
         if (characterState.current.position) {
             const { width: canvasWidth, height: canvasHeight } = canvasSize;
@@ -722,7 +751,7 @@ const App: React.FC = () => {
         draw();
 
         animationFrameId.current = requestAnimationFrame(gameLoop);
-    }, [draw, updateCharacter, canvasSize, characterState]);
+    }, [draw, updateCharacter, canvasSize, characterState, setCharPos]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -770,10 +799,12 @@ const App: React.FC = () => {
 
     const handleGenerate = () => {
         setIsLoading(true);
+        setLogs([]);
         setTimeout(() => {
             const currentSeed = seed || Date.now().toString();
             const result = generate(currentSeed);
             setSegments(result.segments);
+            setLogs(result.logs);
             setIsLoading(false);
         }, 50);
     };
@@ -801,6 +832,9 @@ const App: React.FC = () => {
                 <button onClick={handleGenerate} disabled={isLoading}>
                     Generate
                 </button>
+                <div className="char-position">
+                    X: {charPos.x.toFixed(0)} | Y: {charPos.y.toFixed(0)}
+                </div>
             </div>
             <div className="canvas-container">
                 {isLoading && (
@@ -812,6 +846,11 @@ const App: React.FC = () => {
                     ref={canvasRef}
                 />
             </div>
+            {logs.length > 0 && (
+                <pre className="logs-container">
+                    {logs.join('\n')}
+                </pre>
+            )}
         </div>
     );
 };
