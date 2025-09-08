@@ -1,0 +1,5 @@
+{
+  "name": "Procedural Street Generator",
+  "description": "A procedural road network generator.",
+  "requestFramePermissions": []
+}
