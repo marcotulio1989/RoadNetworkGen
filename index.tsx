@@ -737,7 +737,7 @@ const App: React.FC = () => {
         const roadWidth = defaultConfig.DEFAULT_SEGMENT_WIDTH / 4;
         const highwayWidth = defaultConfig.HIGHWAY_SEGMENT_WIDTH / 4;
 
-        minimapCtx.strokeStyle = 'var(--road-color)';
+        minimapCtx.strokeStyle = '#888888';
         minimapCtx.lineWidth = roadWidth;
         minimapCtx.lineCap = "round";
         minimapCtx.beginPath();
@@ -747,7 +747,7 @@ const App: React.FC = () => {
         });
         minimapCtx.stroke();
 
-        minimapCtx.strokeStyle = 'var(--highway-color)';
+        minimapCtx.strokeStyle = '#f5a623';
         minimapCtx.lineWidth = highwayWidth;
         minimapCtx.lineCap = "round";
         minimapCtx.beginPath();
@@ -775,7 +775,7 @@ const App: React.FC = () => {
         const viewRectWorldWidth = mainWidth / mainTransform.scale;
         const viewRectWorldHeight = mainHeight / mainTransform.scale;
 
-        minimapCtx.strokeStyle = 'white';
+        minimapCtx.strokeStyle = 'black';
         minimapCtx.lineWidth = 150;
         minimapCtx.strokeRect(viewRectWorldX, viewRectWorldY, viewRectWorldWidth, viewRectWorldHeight);
 

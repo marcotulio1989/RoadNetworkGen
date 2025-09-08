@@ -120,7 +120,7 @@ html, body, #root {
   width: 200px;
   height: 150px;
   border: 1px solid var(--border-color);
-  background-color: var(--surface-color);
+  background-color: white;
   border-radius: 4px;
   z-index: 10;
 }
