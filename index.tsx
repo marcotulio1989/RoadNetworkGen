@@ -250,6 +250,9 @@ const DEFAULT_SEGMENT_LENGTH_METERS = 150;
 const HIGHWAY_SEGMENT_LENGTH_METERS = 300;
 const ROAD_SNAP_DISTANCE_METERS = 10;
 
+const CHUNK_SIZE = 5000;
+const STREET_SEGMENT_LIMIT_PER_CHUNK = 100;
+
 const defaultConfig = {
     HIGHWAY_SEGMENT_WIDTH: HIGHWAY_WIDTH_METERS * PIXELS_PER_METER,
     DEFAULT_SEGMENT_WIDTH: NORMAL_ROAD_WIDTH_METERS * PIXELS_PER_METER,
@@ -503,6 +506,89 @@ const globalGoals = {
     }
 };
 
+const highwayGlobalGoals = {
+    generate: (previousSegment: Segment, config: typeof defaultConfig, heatmap: any) => {
+        const newBranches: Segment[] = [];
+        if (previousSegment.q.severed) {
+            return newBranches;
+        }
+
+        const template = (direction: number, length: number, t: number, q: Q) => segmentFactory.usingDirection(previousSegment.r.end, direction, length, t, q);
+        const continueStraight = template(previousSegment.dir(), previousSegment.length(), 0, previousSegment.q);
+        const straightPop = heatmap.popOnRoad(continueStraight.r);
+
+        if (previousSegment.q.highway) {
+            const randomStraight = template(previousSegment.dir() + config.RANDOM_STRAIGHT_ANGLE(), previousSegment.length(), 0, previousSegment.q);
+            const randomPop = heatmap.popOnRoad(randomStraight.r);
+            let roadPop;
+            if (randomPop > straightPop) {
+                newBranches.push(randomStraight);
+                roadPop = randomPop;
+            } else {
+                newBranches.push(continueStraight);
+                roadPop = straightPop;
+            }
+            if (roadPop > config.HIGHWAY_BRANCH_POPULATION_THRESHOLD && Math.random() < config.HIGHWAY_BRANCH_PROBABILITY) {
+                const angle = previousSegment.dir() + (Math.random() > 0.5 ? 90 : -90) + config.RANDOM_BRANCH_ANGLE();
+                newBranches.push(template(angle, previousSegment.length(), 0, { highway: true }));
+            }
+        }
+
+        newBranches.forEach(branch => {
+            branch.setupBranchLinks = () => {
+                previousSegment.links.f.forEach(link => {
+                    branch.links.b.push(link);
+                    const links = link.linksForEndContaining(previousSegment);
+                    if (links) {
+                        links.push(branch);
+                    }
+                });
+                previousSegment.links.f.push(branch);
+                branch.links.b.push(previousSegment);
+            };
+        });
+        return newBranches;
+    }
+};
+
+const streetGlobalGoals = {
+    generate: (previousSegment: Segment, config: typeof defaultConfig, heatmap: any) => {
+        const newBranches: Segment[] = [];
+        if (previousSegment.q.severed) {
+            return newBranches;
+        }
+
+        const template = (direction: number, length: number, t: number, q: Q) => segmentFactory.usingDirection(previousSegment.r.end, direction, length, t, q);
+        const continueStraight = template(previousSegment.dir(), previousSegment.length(), 0, previousSegment.q);
+        const straightPop = heatmap.popOnRoad(continueStraight.r);
+
+        if (!previousSegment.q.highway && straightPop > config.NORMAL_BRANCH_POPULATION_THRESHOLD) {
+            newBranches.push(continueStraight);
+        }
+
+        if (straightPop > config.NORMAL_BRANCH_POPULATION_THRESHOLD && Math.random() < config.DEFAULT_BRANCH_PROBABILITY) {
+            const angle = previousSegment.dir() + (Math.random() > 0.5 ? 90 : -90) + config.RANDOM_BRANCH_ANGLE();
+            const branchTime = previousSegment.q.highway ? config.NORMAL_BRANCH_TIME_DELAY_FROM_HIGHWAY : 0;
+            newBranches.push(template(angle, config.DEFAULT_SEGMENT_LENGTH, branchTime, {}));
+        }
+
+        newBranches.forEach(branch => {
+            branch.setupBranchLinks = () => {
+                previousSegment.links.f.forEach(link => {
+                    branch.links.b.push(link);
+                    const links = link.linksForEndContaining(previousSegment);
+                    if (links) {
+                        links.push(branch);
+                    }
+                });
+                previousSegment.links.f.push(branch);
+                branch.links.b.push(previousSegment);
+            };
+        });
+        return newBranches;
+    }
+};
+
 function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
     segmentCounter = 0;
     const config = { ...defaultConfig, ...options };
@@ -549,12 +635,125 @@ function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
     return { segments };
 }
 
+function generateHighways(seed: string, options: Partial<typeof defaultConfig> = {}) {
+    segmentCounter = 0;
+    const config = { ...defaultConfig, ...options };
+    const random = new SeededRandom(seed);
+    Math.random = random.random.bind(random);
+    noise.seed(Math.random);
+
+    const segments: Segment[] = [];
+    const priorityQ: Segment[] = [];
+    const qTree = new Quadtree(config.QUADTREE_BOUNDS, config.QUADTREE_MAX_OBJECTS, config.QUADTREE_MAX_LEVELS);
+
+    const heatmap = {
+        populationAt: (x: number, y: number) => {
+            const v1 = (noise.simplex2(x / 10000, y / 10000) + 1) / 2;
+            const v2 = (noise.simplex2(x / 20000 + 500, y / 20000 + 500) + 1) / 2;
+            const v3 = (noise.simplex2(x / 20000 + 1000, y / 20000 + 1000) + 1) / 2;
+            return Math.pow((v1 * v2 + v3) / 2, 2);
+        },
+        popOnRoad: (r: Road) => (heatmap.populationAt(r.start.x, r.start.y) + heatmap.populationAt(r.end.x, r.end.y)) / 2
+    };
+
+    const rootSegment = new Segment({ x: 0, y: 0 }, { x: config.HIGHWAY_SEGMENT_LENGTH, y: 0 }, 0, { highway: true });
+    const oppositeDirection = segmentFactory.fromExisting(rootSegment);
+    oppositeDirection.setEnd({ x: -config.HIGHWAY_SEGMENT_LENGTH, y: 0 });
+    oppositeDirection.links.b.push(rootSegment);
+    rootSegment.links.b.push(oppositeDirection);
+    priorityQ.push(rootSegment, oppositeDirection);
+
+    while (priorityQ.length > 0 && segments.length < config.SEGMENT_COUNT_LIMIT) {
+        priorityQ.sort((a, b) => a.t - b.t);
+        const minSegment = priorityQ.shift()!;
+
+        const accepted = localConstraints(minSegment, segments, qTree, config);
+        if (accepted) {
+            if (minSegment.setupBranchLinks) minSegment.setupBranchLinks();
+            addSegment(minSegment, segments, qTree);
+            const newBranches = highwayGlobalGoals.generate(minSegment, config, heatmap);
+            newBranches.forEach(branch => {
+                branch.t = minSegment.t + 1 + branch.t;
+                priorityQ.push(branch);
+            });
+        }
+    }
+    return { segments };
+}
+
+function generateStreetsForChunk(chunkX: number, chunkY: number, seed: string, allHighways: Segment[], config: typeof defaultConfig) {
+    const chunkSeed = `${seed}-${chunkX}-${chunkY}`;
+    const random = new SeededRandom(chunkSeed);
+    Math.random = random.random.bind(random);
+    noise.seed(Math.random);
+
+    const streets: Segment[] = [];
+    const priorityQ: Segment[] = [];
+
+    const chunkBounds = {
+        x: chunkX * CHUNK_SIZE,
+        y: chunkY * CHUNK_SIZE,
+        width: CHUNK_SIZE,
+        height: CHUNK_SIZE
+    };
+
+    const heatmap = {
+        populationAt: (x: number, y: number) => {
+            const v1 = (noise.simplex2(x / 10000, y / 10000) + 1) / 2;
+            const v2 = (noise.simplex2(x / 20000 + 500, y / 20000 + 500) + 1) / 2;
+            const v3 = (noise.simplex2(x / 20000 + 1000, y / 20000 + 1000) + 1) / 2;
+            return Math.pow((v1 * v2 + v3) / 2, 2);
+        },
+        popOnRoad: (r: Road) => (heatmap.populationAt(r.start.x, r.start.y) + heatmap.populationAt(r.end.x, r.end.y)) / 2
+    };
+
+    // Find highways in this chunk to use as seeds for streets
+    const highwaysInChunk = allHighways.filter(h => {
+        const h_x_min = Math.min(h.r.start.x, h.r.end.x);
+        const h_x_max = Math.max(h.r.start.x, h.r.end.x);
+        const h_y_min = Math.min(h.r.start.y, h.r.end.y);
+        const h_y_max = Math.max(h.r.start.y, h.r.end.y);
+
+        return h_x_max >= chunkBounds.x && h_x_min <= chunkBounds.x + chunkBounds.width &&
+               h_y_max >= chunkBounds.y && h_y_min <= chunkBounds.y + chunkBounds.height;
+    });
+
+    highwaysInChunk.forEach(h => priorityQ.push(h));
+
+    let streetSegmentCounter = 0;
+    while (priorityQ.length > 0 && streetSegmentCounter < STREET_SEGMENT_LIMIT_PER_CHUNK) {
+        priorityQ.sort((a, b) => a.t - b.t);
+        const minSegment = priorityQ.shift()!;
+
+        // For simplicity in this chunk-based system, we are omitting local constraints (intersections) for now.
+        // This would require a more complex system to handle segments from neighboring chunks.
+        const newBranches = streetGlobalGoals.generate(minSegment, config, heatmap);
+
+        newBranches.forEach(branch => {
+            // Constrain generated streets to the chunk boundaries.
+            if (branch.r.end.x >= chunkBounds.x && branch.r.end.x <= chunkBounds.x + CHUNK_SIZE &&
+                branch.r.end.y >= chunkBounds.y && branch.r.end.y <= chunkBounds.y + CHUNK_SIZE) {
+
+                branch.t = minSegment.t + 1 + branch.t;
+                priorityQ.push(branch);
+                streets.push(branch);
+                streetSegmentCounter++;
+            }
+        });
+    }
+
+    return streets;
+}
+
 
 // --- REACT COMPONENT ---
 
 const App: React.FC = () => {
     const [seed, setSeed] = useState<string>('city');
     const [segments, setSegments] = useState<Segment[]>([]);
+    const [highways, setHighways] = useState<Segment[]>([]);
+    const streetChunkCache = useRef<Map<string, Segment[]>>(new Map());
+    const [initialTransformSet, setInitialTransformSet] = useState(false);
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
     
@@ -563,6 +762,47 @@ const App: React.FC = () => {
     const networkCenterRef = useRef<Point>({ x: 0, y: 0 });
     const isPanningRef = useRef(false);
     const lastMousePosRef = useRef<Point>({ x: 0, y: 0 });
+
+    const updateVisibleChunks = () => {
+        if (highways.length === 0 || canvasSize.width === 0 || canvasSize.height === 0) {
+            // If there are no highways or the canvas isn't ready, do nothing.
+            return;
+        }
+
+        const { x: viewX, y: viewY, scale } = transformRef.current;
+        const { width: canvasWidth, height: canvasHeight } = canvasSize;
+
+        // Calculate the visible area in world coordinates
+        const worldView = {
+            x: -viewX / scale,
+            y: -viewY / scale,
+            width: canvasWidth / scale,
+            height: canvasHeight / scale
+        };
+
+        // Determine the central chunk based on the center of the view
+        const centerChunkX = Math.floor((worldView.x + worldView.width / 2) / CHUNK_SIZE);
+        const centerChunkY = Math.floor((worldView.y + worldView.height / 2) / CHUNK_SIZE);
+        const CHUNK_LOADING_RADIUS = 1; // Load a 3x3 grid of chunks
+
+        const newSegments: Segment[] = [...highways];
+
+        for (let cx = centerChunkX - CHUNK_LOADING_RADIUS; cx <= centerChunkX + CHUNK_LOADING_RADIUS; cx++) {
+            for (let cy = centerChunkY - CHUNK_LOADING_RADIUS; cy <= centerChunkY + CHUNK_LOADING_RADIUS; cy++) {
+                const chunkKey = `${cx},${cy}`;
+
+                if (streetChunkCache.current.has(chunkKey)) {
+                    newSegments.push(...streetChunkCache.current.get(chunkKey)!);
+                } else {
+                    const newStreets = generateStreetsForChunk(cx, cy, seed, highways, defaultConfig);
+                    streetChunkCache.current.set(chunkKey, newStreets);
+                    newSegments.push(...newStreets);
+                }
+            }
+        }
+
+        setSegments(newSegments);
+    };
 
     const draw = useCallback(() => {
         const canvas = canvasRef.current;
@@ -578,6 +818,7 @@ const App: React.FC = () => {
         const { x, y, scale } = transformRef.current;
         
         ctx.clearRect(0, 0, width, height);
+
         ctx.save();
         ctx.translate(x, y);
         ctx.scale(scale, scale);
@@ -642,37 +883,48 @@ const App: React.FC = () => {
             return;
         }
 
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const seg of segments) {
-            minX = Math.min(minX, seg.r.start.x, seg.r.end.x);
-            minY = Math.min(minY, seg.r.start.y, seg.r.end.y);
-            maxX = Math.max(maxX, seg.r.start.x, seg.r.end.x);
-            maxY = Math.max(maxY, seg.r.start.y, seg.r.end.y);
+        if (!initialTransformSet) {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const seg of segments) {
+                minX = Math.min(minX, seg.r.start.x, seg.r.end.x);
+                minY = Math.min(minY, seg.r.start.y, seg.r.end.y);
+                maxX = Math.max(maxX, seg.r.start.x, seg.r.end.x);
+                maxY = Math.max(maxY, seg.r.start.y, seg.r.end.y);
+            }
+
+            const networkWidth = (maxX - minX) || 1;
+            const networkHeight = (maxY - minY) || 1;
+            const networkCenterX = minX + networkWidth / 2;
+            const networkCenterY = minY + networkHeight / 2;
+            networkCenterRef.current = { x: networkCenterX, y: networkCenterY };
+
+            const padding = 0.9;
+            const scale = Math.min(canvasWidth / networkWidth, canvasHeight / networkHeight) * padding;
+
+            const tx = canvasWidth / 2 - networkCenterX * scale;
+            const ty = canvasHeight / 2 - networkCenterY * scale;
+
+            transformRef.current = { scale, x: tx, y: ty };
+            setInitialTransformSet(true);
         }
-
-        const networkWidth = (maxX - minX) || 1;
-        const networkHeight = (maxY - minY) || 1;
-        const networkCenterX = minX + networkWidth / 2;
-        const networkCenterY = minY + networkHeight / 2;
-        networkCenterRef.current = { x: networkCenterX, y: networkCenterY };
-
-        const padding = 0.9;
-        const scale = Math.min(canvasWidth / networkWidth, canvasHeight / networkHeight) * padding;
-        
-        const tx = canvasWidth / 2 - networkCenterX * scale;
-        const ty = canvasHeight / 2 - networkCenterY * scale;
-        
-        transformRef.current = { scale, x: tx, y: ty };
         draw();
-    }, [segments, canvasSize, draw]);
+    }, [segments, canvasSize, draw, initialTransformSet]);
+
+    useEffect(() => {
+        if (highways.length > 0) {
+            updateVisibleChunks();
+        }
+    }, [highways]);
 
     const handleGenerate = () => {
         setIsLoading(true);
         // Use timeout to allow UI to update before blocking thread
         setTimeout(() => {
             const currentSeed = seed || Date.now().toString();
-            const result = generate(currentSeed);
-            setSegments(result.segments);
+            setInitialTransformSet(false);
+            const highwayResult = generateHighways(currentSeed, defaultConfig);
+            setHighways(highwayResult.segments);
+            streetChunkCache.current.clear();
             setIsLoading(false);
         }, 50);
     };
@@ -693,6 +945,7 @@ const App: React.FC = () => {
         transformRef.current.x += dx;
         transformRef.current.y += dy;
         lastMousePosRef.current = { x: e.clientX, y: e.clientY };
+        updateVisibleChunks();
         draw();
     };
     
@@ -714,6 +967,7 @@ const App: React.FC = () => {
         transformRef.current.x = mouseX - worldX * newScale;
         transformRef.current.y = mouseY - worldY * newScale;
         
+        updateVisibleChunks();
         draw();
     };
 
