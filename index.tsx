@@ -7,6 +7,10 @@ type Road = { start: Point; end: Point };
 type Q = { highway?: boolean; severed?: boolean };
 type Bounds = { x: number; y: number; width: number; height: number };
 type QuadtreeObject = Bounds & { o: Segment };
+type Building = {
+    footprint: Point[]; // The 4 corners of the rectangular base in world coordinates
+    height: number;
+};
 
 // --- DEPENDENCY IMPLEMENTATIONS ---
 
@@ -576,6 +580,164 @@ function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
     return { segments, logs };
 }
 
+function findCityBlocks(segments: Segment[]): Point[][] {
+    if (segments.length === 0) {
+        return [];
+    }
+
+    type Junction = {
+        point: Point;
+        segments: Segment[];
+    };
+
+    const junctions = new Map<string, Junction>();
+    const pointToKey = (p: Point) => `${p.x},${p.y}`;
+
+    // 1. Build junctions map
+    for (const seg of segments) {
+        const startKey = pointToKey(seg.r.start);
+        const endKey = pointToKey(seg.r.end);
+
+        if (!junctions.has(startKey)) {
+            junctions.set(startKey, { point: seg.r.start, segments: [] });
+        }
+        if (!junctions.has(endKey)) {
+            junctions.set(endKey, { point: seg.r.end, segments: [] });
+        }
+
+        junctions.get(startKey)!.segments.push(seg);
+        junctions.get(endKey)!.segments.push(seg);
+    }
+
+    // 2. Sort segments at each junction by angle
+    for (const junction of junctions.values()) {
+        junction.segments.sort((a, b) => {
+            const getOtherEnd = (seg: Segment, point: Point) => math.equalV(seg.r.start, point) ? seg.r.end : seg.r.start;
+            const angleA = Math.atan2(
+                getOtherEnd(a, junction.point).y - junction.point.y,
+                getOtherEnd(a, junction.point).x - junction.point.x
+            );
+            const angleB = Math.atan2(
+                getOtherEnd(b, junction.point).y - junction.point.y,
+                getOtherEnd(b, junction.point).x - junction.point.x
+            );
+            return angleA - angleB;
+        });
+    }
+
+    const faces: Point[][] = [];
+    const visitedHalfEdges = new Set<string>(); // Key: segment.id + "," + startPointKey
+
+    // 3. Face-finding traversal
+    for (const startJunction of junctions.values()) {
+        for (const startSegment of startJunction.segments) {
+            const startKey = pointToKey(startJunction.point);
+            const halfEdgeKey = `${startSegment.id},${startKey}`;
+
+            if (visitedHalfEdges.has(halfEdgeKey)) {
+                continue;
+            }
+
+            const newFace: Point[] = [];
+            let currentJunction = startJunction;
+            let currentSegment = startSegment;
+            let pathFound = false;
+
+            for (let i = 0; i < segments.length + 1; i++) { // Loop breaker
+                const currentKey = pointToKey(currentJunction.point);
+                const currentHalfEdgeKey = `${currentSegment.id},${currentKey}`;
+
+                if (visitedHalfEdges.has(currentHalfEdgeKey)) {
+                    break;
+                }
+                visitedHalfEdges.add(currentHalfEdgeKey);
+                newFace.push(currentJunction.point);
+
+                const nextPoint = math.equalV(currentSegment.r.start, currentJunction.point)
+                    ? currentSegment.r.end
+                    : currentSegment.r.start;
+
+                const nextJunction = junctions.get(pointToKey(nextPoint));
+                if (!nextJunction) break;
+
+                const sortedSegments = nextJunction.segments;
+                const incomingIndex = sortedSegments.findIndex(s => s.id === currentSegment.id);
+
+                if (incomingIndex === -1) break;
+
+                const nextSegment = sortedSegments[(incomingIndex + 1) % sortedSegments.length];
+
+                currentJunction = nextJunction;
+                currentSegment = nextSegment;
+
+                if (currentSegment.id === startSegment.id && math.equalV(nextPoint, startJunction.point)) {
+                    pathFound = true;
+                    break;
+                }
+            }
+
+            if (pathFound && newFace.length > 2) {
+                faces.push(newFace);
+            }
+        }
+    }
+
+    console.log(`Found ${faces.length} faces.`);
+    return faces;
+}
+
+function generateAllBuildings(blocks: Point[][]): Building[] {
+    const allBuildings: Building[] = [];
+    const buildingMinSize = 150;
+    const buildingMaxSize = 400;
+
+    for (const block of blocks) {
+        if (block.length < 3) continue;
+
+        // 1. Find bounding box of the block
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        block.forEach(p => {
+            minX = Math.min(minX, p.x);
+            minY = Math.min(minY, p.y);
+            maxX = Math.max(maxX, p.x);
+            maxY = Math.max(maxY, p.y);
+        });
+
+        const blockWidth = maxX - minX;
+        const blockHeight = maxY - minY;
+
+        if (blockWidth < buildingMinSize * 1.5 || blockHeight < buildingMinSize * 1.5) {
+            continue; // Skip blocks that are too small
+        }
+
+        // 2. Decide on building size
+        const buildingWidth = Math.max(buildingMinSize, Math.random() * Math.min(blockWidth * 0.7, buildingMaxSize));
+        const buildingDepth = Math.max(buildingMinSize, Math.random() * Math.min(blockHeight * 0.7, buildingMaxSize));
+
+        // 3. Find a random position within the block's bounding box
+        const x = minX + (blockWidth - buildingWidth) / 2;
+        const y = minY + (blockHeight - buildingDepth) / 2;
+
+        // For now, we don't check if the building is actually inside the polygon,
+        // the bounding box placement is good enough for a first version.
+
+        const footprint: Point[] = [
+            { x: x, y: y },
+            { x: x + buildingWidth, y: y },
+            { x: x + buildingWidth, y: y + buildingDepth },
+            { x: x, y: y + buildingDepth },
+        ];
+
+        allBuildings.push({
+            footprint,
+            height: Math.random() * 800 + 200, // Random height
+        });
+    }
+
+    console.log(`Generated ${allBuildings.length} buildings.`);
+    return allBuildings;
+}
+
 
 // --- CHARACTER LOGIC ---
 const useCharacter = () => {
@@ -696,6 +858,8 @@ const useCharacter = () => {
 const App: React.FC = () => {
     const [seed, setSeed] = useState<string>('city');
     const [segments, setSegments] = useState<Segment[]>([]);
+    const [blocks, setBlocks] = useState<Point[][]>([]);
+    const [buildings, setBuildings] = useState<Building[]>([]);
     const [logs, setLogs] = useState<string[]>([]);
     const [charPos, setCharPos] = useState<Point>({ x: 0, y: 0 });
     const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -826,6 +990,60 @@ const App: React.FC = () => {
         const normalRoads = segments.filter(s => !s.q.highway);
         const highways = segments.filter(s => s.q.highway);
 
+        const drawBuildings = (ctx: CanvasRenderingContext2D, buildings: Building[]) => {
+            const sortedBuildings = [...buildings].sort((a, b) => {
+                const centerA = a.footprint.reduce((sum, p) => sum + p.y, 0) / 4;
+                const centerB = b.footprint.reduce((sum, p) => sum + p.y, 0) / 4;
+                return centerA - centerB;
+            });
+
+            sortedBuildings.forEach(building => {
+                const { footprint, height } = building;
+                const base_iso = footprint.map(math.toIsometric);
+                const top_iso = footprint.map(p => {
+                    const iso = math.toIsometric(p);
+                    iso.y -= height;
+                    return iso;
+                });
+
+                ctx.strokeStyle = '#222222';
+                ctx.lineWidth = 2;
+
+                // Face 1 (right)
+                ctx.fillStyle = '#555555';
+                ctx.beginPath();
+                ctx.moveTo(base_iso[1].x, base_iso[1].y);
+                ctx.lineTo(base_iso[2].x, base_iso[2].y);
+                ctx.lineTo(top_iso[2].x, top_iso[2].y);
+                ctx.lineTo(top_iso[1].x, top_iso[1].y);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                // Face 2 (bottom)
+                ctx.fillStyle = '#666666';
+                ctx.beginPath();
+                ctx.moveTo(base_iso[2].x, base_iso[2].y);
+                ctx.lineTo(base_iso[3].x, base_iso[3].y);
+                ctx.lineTo(top_iso[3].x, top_iso[3].y);
+                ctx.lineTo(top_iso[2].x, top_iso[2].y);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+
+                // Top face
+                ctx.fillStyle = '#8a8a8a';
+                ctx.beginPath();
+                ctx.moveTo(top_iso[0].x, top_iso[0].y);
+                ctx.lineTo(top_iso[1].x, top_iso[1].y);
+                ctx.lineTo(top_iso[2].x, top_iso[2].y);
+                ctx.lineTo(top_iso[3].x, top_iso[3].y);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            });
+        };
+
         const drawRoadsAsPolygons = (roads: Segment[], color: string) => {
             ctx.fillStyle = color;
             roads.forEach(seg => {
@@ -857,6 +1075,7 @@ const App: React.FC = () => {
             });
         };
 
+        drawBuildings(ctx, buildings);
         drawRoadsAsPolygons(highways, 'var(--highway-color)');
         drawRoadsAsPolygons(normalRoads, 'var(--road-color)');
         
@@ -865,7 +1084,7 @@ const App: React.FC = () => {
         ctx.restore();
 
         drawMinimap();
-    }, [segments, canvasSize, drawCharacter, drawMinimap]);
+    }, [segments, buildings, canvasSize, drawCharacter, drawMinimap]);
 
     const gameLoop = useCallback((timestamp: number) => {
         const deltaTime = (timestamp - lastTimestamp.current) / 1000;
@@ -938,6 +1157,18 @@ const App: React.FC = () => {
             const currentSeed = seed || Date.now().toString();
             const result = generate(currentSeed);
             setSegments(result.segments);
+            const blocks = findCityBlocks(result.segments);
+            setBlocks(blocks);
+            const buildings = generateAllBuildings(blocks);
+            setBuildings(buildings);
+
+            if (buildings.length > 0 && characterState.current) {
+                const b = buildings[Math.floor(buildings.length / 2)]; // Pick a building near the middle
+                const centerX = b.footprint[0].x + (b.footprint[1].x - b.footprint[0].x) / 2;
+                const centerY = b.footprint[0].y + (b.footprint[3].y - b.footprint[0].y) / 2;
+                characterState.current.position = { x: centerX, y: centerY };
+            }
+
             setLogs(result.logs);
             setIsLoading(false);
         }, 50);
