@@ -582,7 +582,7 @@ const useCharacter = () => {
     const [isImageLoaded, setIsImageLoaded] = useState(false);
     const characterState = useRef({
         position: { x: 0, y: 0 } as Point,
-        speed: 200, // units per second
+        speed: 400, // units per second
         image: null as HTMLImageElement | null,
         rotation: 0,
     });
@@ -911,7 +911,7 @@ const App: React.FC = () => {
         // uniformly based on the canvas dimensions.
         const smallerDimension = Math.min(canvasWidth, canvasHeight);
         // This sets the scale so that a world view of 730 units (approx. 20 meters) fits into the smaller dimension.
-        transformRef.current.scale = smallerDimension / 5000;
+        transformRef.current.scale = smallerDimension / 1095;
 
         if (segments.length === 0) {
             transformRef.current.x = canvasWidth / 2;
