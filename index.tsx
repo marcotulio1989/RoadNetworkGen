@@ -539,6 +539,116 @@ function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
 }
 
 
+// --- CHARACTER LOGIC ---
+const useCharacter = (segments: Segment[]) => {
+    const characterState = useRef({
+        position: null as Point | null,
+        currentSegment: null as Segment | null,
+        t: 0, // progress along the segment (0 to 1)
+        speed: 150, // units per second
+        image: null as HTMLImageElement | null,
+        rotation: 0,
+    });
+
+    useEffect(() => {
+        const image = new Image();
+        image.src = 'https://raw.githubusercontent.com/eerkek/personal-code-assistant-app/main/assets/car.png';
+        image.onload = () => {
+            characterState.current.image = image;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (segments.length > 0) {
+            const nonHighways = segments.filter(s => !s.q.highway);
+            const startSegments = nonHighways.length > 0 ? nonHighways : segments;
+            const randomSegment = startSegments[Math.floor(Math.random() * startSegments.length)];
+
+            characterState.current.currentSegment = randomSegment;
+            characterState.current.position = { ...randomSegment.r.start };
+            characterState.current.t = 0;
+        }
+    }, [segments]);
+
+    const chooseNextSegment = (current: Segment) => {
+        const connected = [...current.links.f];
+        if (connected.length === 0) return null;
+
+        const currentDir = current.dir();
+
+        connected.sort((a, b) => {
+            const aDiff = minDegreeDifference(currentDir, a.dir());
+            const bDiff = minDegreeDifference(currentDir, b.dir());
+            return aDiff - bDiff;
+        });
+
+        return connected[0];
+    };
+
+    const updateCharacter = (deltaTime: number) => {
+        const state = characterState.current;
+        if (!state.currentSegment || !state.position || !state.image) {
+            return;
+        }
+
+        const segment = state.currentSegment;
+        const segmentLength = segment.length();
+        if (segmentLength === 0) {
+             const nextSegment = chooseNextSegment(segment);
+             state.currentSegment = nextSegment;
+             state.t = 0;
+             return;
+        }
+
+        const distanceToTravel = state.speed * deltaTime;
+        state.t += distanceToTravel / segmentLength;
+
+        if (state.t >= 1) {
+            const nextSegment = chooseNextSegment(segment);
+            if (nextSegment) {
+                const leftoverT = state.t - 1;
+                const leftoverDist = leftoverT * segmentLength;
+                state.currentSegment = nextSegment;
+                const nextLength = nextSegment.length();
+                state.t = nextLength > 0 ? leftoverDist / nextLength : 0;
+            } else {
+                 const randomSegment = segments[Math.floor(Math.random() * segments.length)];
+                 state.currentSegment = randomSegment;
+                 if(randomSegment) state.position = { ...randomSegment.r.start };
+                 state.t = 0;
+                 return;
+            }
+        }
+
+        const newSegment = state.currentSegment;
+        if (!newSegment) return;
+
+        const start = newSegment.r.start;
+        const end = newSegment.r.end;
+        state.position = {
+            x: start.x + (end.x - start.x) * state.t,
+            y: start.y + (end.y - start.y) * state.t,
+        };
+        state.rotation = newSegment.dir();
+    };
+
+    const drawCharacter = (ctx: CanvasRenderingContext2D, transform: { x: number, y: number, scale: number }) => {
+        const state = characterState.current;
+        if (!state.position || !state.image) return;
+
+        const carSize = 64 / transform.scale;
+
+        ctx.save();
+        ctx.translate(state.position.x, state.position.y);
+        ctx.rotate(state.rotation * Math.PI / 180);
+        ctx.drawImage(state.image, -carSize / 2, -carSize / 2, carSize, carSize);
+        ctx.restore();
+    };
+
+    return { updateCharacter, drawCharacter };
+};
+
+
 // --- REACT COMPONENT ---
 
 const App: React.FC = () => {
@@ -551,6 +661,10 @@ const App: React.FC = () => {
     const transformRef = useRef({ x: 0, y: 0, scale: 1 });
     const isPanningRef = useRef(false);
     const lastMousePosRef = useRef<Point>({ x: 0, y: 0 });
+    const animationFrameId = useRef<number | null>(null);
+    const lastTimestamp = useRef(0);
+
+    const { updateCharacter, drawCharacter } = useCharacter(segments);
 
     const draw = useCallback(() => {
         const canvas = canvasRef.current;
@@ -593,10 +707,21 @@ const App: React.FC = () => {
         });
         ctx.stroke();
         
-        ctx.restore();
-    }, [segments, canvasSize]);
+        drawCharacter(ctx, transformRef.current);
 
-    // Effect to observe canvas size changes
+        ctx.restore();
+    }, [segments, canvasSize, drawCharacter]);
+
+    const gameLoop = useCallback((timestamp: number) => {
+        const deltaTime = (timestamp - lastTimestamp.current) / 1000;
+        lastTimestamp.current = timestamp;
+
+        updateCharacter(deltaTime);
+        draw();
+
+        animationFrameId.current = requestAnimationFrame(gameLoop);
+    }, [draw, updateCharacter]);
+
     useEffect(() => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -612,10 +737,8 @@ const App: React.FC = () => {
         return () => resizeObserver.disconnect();
     }, []);
     
-    // Effect to calculate transform and re-draw when data or size changes
     useEffect(() => {
         const { width: canvasWidth, height: canvasHeight } = canvasSize;
-
         if (canvasWidth === 0 || canvasHeight === 0) return;
 
         if (segments.length === 0) {
@@ -647,9 +770,18 @@ const App: React.FC = () => {
         draw();
     }, [segments, canvasSize, draw]);
 
+    useEffect(() => {
+        lastTimestamp.current = performance.now();
+        animationFrameId.current = requestAnimationFrame(gameLoop);
+        return () => {
+            if (animationFrameId.current) {
+                cancelAnimationFrame(animationFrameId.current);
+            }
+        };
+    }, [gameLoop]);
+
     const handleGenerate = () => {
         setIsLoading(true);
-        // Use timeout to allow UI to update before blocking thread
         setTimeout(() => {
             const currentSeed = seed || Date.now().toString();
             const result = generate(currentSeed);
@@ -699,7 +831,7 @@ const App: React.FC = () => {
     };
 
     useEffect(() => {
-      handleGenerate(); // Generate on initial load
+      handleGenerate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
