@@ -210,13 +210,13 @@ const math = {
     toIsometric: (p: Point): Point => {
         return {
             x: p.x - p.y,
-            y: (p.x + p.y) / 2,
+            y: (p.x + p.y) * 0.45,
         };
     },
     fromIsometric: (p: Point): Point => {
         return {
-            x: p.y + p.x / 2,
-            y: p.y - p.x / 2,
+            x: p.y / 0.9 + p.x / 2,
+            y: p.y / 0.9 - p.x / 2,
         };
     },
     doLineSegmentsIntersect: (p: Point, p2: Point, q: Point, q2: Point, touchIsIntersect = false): { t: number, point: Point } | null => {
