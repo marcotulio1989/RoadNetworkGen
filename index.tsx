@@ -518,7 +518,7 @@ function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
             const v1 = (noise.simplex2(x / 10000, y / 10000) + 1) / 2;
             const v2 = (noise.simplex2(x / 20000 + 500, y / 20000 + 500) + 1) / 2;
             const v3 = (noise.simplex2(x / 20000 + 1000, y / 20000 + 1000) + 1) / 2;
-            return Math.pow((v1 * v2 + v3) / 2, 2);
+            return Math.pow((v1 + v2 + v3) / 3, 2);
         },
         popOnRoad: (r: Road) => (heatmap.populationAt(r.start.x, r.start.y) + heatmap.populationAt(r.end.x, r.end.y)) / 2
     };
