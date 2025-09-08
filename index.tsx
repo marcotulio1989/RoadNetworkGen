@@ -252,8 +252,8 @@ const math = {
 // --- ROAD GENERATION LOGIC ---
 
 const defaultConfig = {
-    HIGHWAY_SEGMENT_WIDTH: 8,
-    DEFAULT_SEGMENT_WIDTH: 4,
+    HIGHWAY_SEGMENT_WIDTH: 640,
+    DEFAULT_SEGMENT_WIDTH: 320,
     DEFAULT_SEGMENT_LENGTH: 4000,
     HIGHWAY_SEGMENT_LENGTH: 4000,
     MINIMUM_INTERSECTION_DEVIATION: 30,
@@ -826,31 +826,39 @@ const App: React.FC = () => {
         const normalRoads = segments.filter(s => !s.q.highway);
         const highways = segments.filter(s => s.q.highway);
 
-        // Draw normal roads
-        ctx.strokeStyle = 'var(--road-color)';
-        ctx.lineWidth = defaultConfig.DEFAULT_SEGMENT_WIDTH;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        normalRoads.forEach(seg => {
-            const isoStart = math.toIsometric(seg.r.start);
-            const isoEnd = math.toIsometric(seg.r.end);
-            ctx.moveTo(isoStart.x, isoStart.y);
-            ctx.lineTo(isoEnd.x, isoEnd.y);
-        });
-        ctx.stroke();
+        const drawRoadsAsPolygons = (roads: Segment[], color: string) => {
+            ctx.fillStyle = color;
+            roads.forEach(seg => {
+                const vec = math.subtractPoints(seg.r.end, seg.r.start);
+                const length = Math.sqrt(vec.x * vec.x + vec.y * vec.y);
+                if (length === 0) return;
 
-        // Draw highways
-        ctx.strokeStyle = 'var(--highway-color)';
-        ctx.lineWidth = defaultConfig.HIGHWAY_SEGMENT_WIDTH;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        highways.forEach(seg => {
-            const isoStart = math.toIsometric(seg.r.start);
-            const isoEnd = math.toIsometric(seg.r.end);
-            ctx.moveTo(isoStart.x, isoStart.y);
-            ctx.lineTo(isoEnd.x, isoEnd.y);
-        });
-        ctx.stroke();
+                const perp = { x: -vec.y / length, y: vec.x / length };
+
+                const halfWidth = seg.width / 2;
+
+                const p1 = { x: seg.r.start.x + perp.x * halfWidth, y: seg.r.start.y + perp.y * halfWidth };
+                const p2 = { x: seg.r.start.x - perp.x * halfWidth, y: seg.r.start.y - perp.y * halfWidth };
+                const p3 = { x: seg.r.end.x - perp.x * halfWidth, y: seg.r.end.y - perp.y * halfWidth };
+                const p4 = { x: seg.r.end.x + perp.x * halfWidth, y: seg.r.end.y + perp.y * halfWidth };
+
+                const iso_p1 = math.toIsometric(p1);
+                const iso_p2 = math.toIsometric(p2);
+                const iso_p3 = math.toIsometric(p3);
+                const iso_p4 = math.toIsometric(p4);
+
+                ctx.beginPath();
+                ctx.moveTo(iso_p1.x, iso_p1.y);
+                ctx.lineTo(iso_p2.x, iso_p2.y);
+                ctx.lineTo(iso_p3.x, iso_p3.y);
+                ctx.lineTo(iso_p4.x, iso_p4.y);
+                ctx.closePath();
+                ctx.fill();
+            });
+        };
+
+        drawRoadsAsPolygons(highways, 'var(--highway-color)');
+        drawRoadsAsPolygons(normalRoads, 'var(--road-color)');
         
         drawCharacter(ctx, transformRef.current);
 
