@@ -540,14 +540,19 @@ function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
 
 
 // --- CHARACTER LOGIC ---
-const useCharacter = (segments: Segment[]) => {
+const useCharacter = () => {
     const characterState = useRef({
-        position: null as Point | null,
-        currentSegment: null as Segment | null,
-        t: 0, // progress along the segment (0 to 1)
-        speed: 150, // units per second
+        position: { x: 0, y: 0 } as Point,
+        speed: 200, // units per second
         image: null as HTMLImageElement | null,
         rotation: 0,
+    });
+
+    const keys = useRef({
+        ArrowUp: false,
+        ArrowDown: false,
+        ArrowLeft: false,
+        ArrowRight: false,
     });
 
     useEffect(() => {
@@ -556,80 +561,58 @@ const useCharacter = (segments: Segment[]) => {
         image.onload = () => {
             characterState.current.image = image;
         };
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key in keys.current) {
+                (keys.current as any)[e.key] = true;
+            }
+        };
+
+        const handleKeyUp = (e: KeyboardEvent) => {
+            if (e.key in keys.current) {
+                (keys.current as any)[e.key] = false;
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', handleKeyUp);
+
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+        };
     }, []);
-
-    useEffect(() => {
-        if (segments.length > 0) {
-            const nonHighways = segments.filter(s => !s.q.highway);
-            const startSegments = nonHighways.length > 0 ? nonHighways : segments;
-            const randomSegment = startSegments[Math.floor(Math.random() * startSegments.length)];
-
-            characterState.current.currentSegment = randomSegment;
-            characterState.current.position = { ...randomSegment.r.start };
-            characterState.current.t = 0;
-        }
-    }, [segments]);
-
-    const chooseNextSegment = (current: Segment) => {
-        const connected = [...current.links.f];
-        if (connected.length === 0) return null;
-
-        const currentDir = current.dir();
-
-        connected.sort((a, b) => {
-            const aDiff = minDegreeDifference(currentDir, a.dir());
-            const bDiff = minDegreeDifference(currentDir, b.dir());
-            return aDiff - bDiff;
-        });
-
-        return connected[0];
-    };
 
     const updateCharacter = (deltaTime: number) => {
         const state = characterState.current;
-        if (!state.currentSegment || !state.position || !state.image) {
+        const keysPressed = keys.current;
+
+        if (!state.position || !state.image) {
             return;
         }
 
-        const segment = state.currentSegment;
-        const segmentLength = segment.length();
-        if (segmentLength === 0) {
-             const nextSegment = chooseNextSegment(segment);
-             state.currentSegment = nextSegment;
-             state.t = 0;
-             return;
+        const distance = state.speed * deltaTime;
+        let dx = 0;
+        let dy = 0;
+
+        if (keysPressed.ArrowUp) {
+            dy -= distance;
+        }
+        if (keysPressed.ArrowDown) {
+            dy += distance;
+        }
+        if (keysPressed.ArrowLeft) {
+            dx -= distance;
+        }
+        if (keysPressed.ArrowRight) {
+            dx += distance;
         }
 
-        const distanceToTravel = state.speed * deltaTime;
-        state.t += distanceToTravel / segmentLength;
-
-        if (state.t >= 1) {
-            const nextSegment = chooseNextSegment(segment);
-            if (nextSegment) {
-                const leftoverT = state.t - 1;
-                const leftoverDist = leftoverT * segmentLength;
-                state.currentSegment = nextSegment;
-                const nextLength = nextSegment.length();
-                state.t = nextLength > 0 ? leftoverDist / nextLength : 0;
-            } else {
-                 const randomSegment = segments[Math.floor(Math.random() * segments.length)];
-                 state.currentSegment = randomSegment;
-                 if(randomSegment) state.position = { ...randomSegment.r.start };
-                 state.t = 0;
-                 return;
-            }
+        if (dx !== 0 || dy !== 0) {
+            state.position.x += dx;
+            state.position.y += dy;
+            state.rotation = Math.atan2(dy, dx) * 180 / Math.PI + 90;
         }
-
-        const newSegment = state.currentSegment;
-        if (!newSegment) return;
-
-        const start = newSegment.r.start;
-        const end = newSegment.r.end;
-        state.position = {
-            x: start.x + (end.x - start.x) * state.t,
-            y: start.y + (end.y - start.y) * state.t,
-        };
-        state.rotation = newSegment.dir();
     };
 
     const drawCharacter = (ctx: CanvasRenderingContext2D, transform: { x: number, y: number, scale: number }) => {
@@ -662,7 +645,7 @@ const App: React.FC = () => {
     const animationFrameId = useRef<number | null>(null);
     const lastTimestamp = useRef(0);
 
-    const { updateCharacter, drawCharacter, characterState } = useCharacter(segments);
+    const { updateCharacter, drawCharacter, characterState } = useCharacter();
 
     const draw = useCallback(() => {
         const canvas = canvasRef.current;
