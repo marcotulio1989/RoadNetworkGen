@@ -207,6 +207,18 @@ const math = {
     cosDegrees: (deg: number): number => Math.cos(deg * Math.PI / 180),
     sinDegrees: (deg: number): number => Math.sin(deg * Math.PI / 180),
     toDegrees: (rad: number): number => rad * 180 / Math.PI,
+    toIsometric: (p: Point): Point => {
+        return {
+            x: p.x - p.y,
+            y: (p.x + p.y) / 2,
+        };
+    },
+    fromIsometric: (p: Point): Point => {
+        return {
+            x: p.y + p.x / 2,
+            y: p.y - p.x / 2,
+        };
+    },
     doLineSegmentsIntersect: (p: Point, p2: Point, q: Point, q2: Point, touchIsIntersect = false): { t: number, point: Point } | null => {
         const r = { x: p2.x - p.x, y: p2.y - p.y };
         const s = { x: q2.x - q.x, y: q2.y - q.y };
@@ -240,8 +252,8 @@ const math = {
 // --- ROAD GENERATION LOGIC ---
 
 const defaultConfig = {
-    HIGHWAY_SEGMENT_WIDTH: 640,
-    DEFAULT_SEGMENT_WIDTH: 320,
+    HIGHWAY_SEGMENT_WIDTH: 8,
+    DEFAULT_SEGMENT_WIDTH: 4,
     DEFAULT_SEGMENT_LENGTH: 4000,
     HIGHWAY_SEGMENT_LENGTH: 4000,
     MINIMUM_INTERSECTION_DEVIATION: 30,
@@ -619,27 +631,36 @@ const useCharacter = () => {
             return;
         }
 
-        const distance = state.speed * deltaTime;
-        let dx = 0;
-        let dy = 0;
+        const speed = state.speed * deltaTime;
+        let screen_dx = 0;
+        let screen_dy = 0;
 
         if (keysPressed.ArrowUp) {
-            dy -= distance;
+            screen_dy = -1;
         }
         if (keysPressed.ArrowDown) {
-            dy += distance;
+            screen_dy = 1;
         }
         if (keysPressed.ArrowLeft) {
-            dx -= distance;
+            screen_dx = -1;
         }
         if (keysPressed.ArrowRight) {
-            dx += distance;
+            screen_dx = 1;
         }
 
-        if (dx !== 0 || dy !== 0) {
-            state.position.x += dx;
-            state.position.y += dy;
-            state.rotation = Math.atan2(dy, dx) * 180 / Math.PI;
+        if (screen_dx !== 0 || screen_dy !== 0) {
+            const screen_vec = { x: screen_dx, y: screen_dy };
+            const world_vec = math.fromIsometric(screen_vec);
+
+            const len = Math.sqrt(world_vec.x * world_vec.x + world_vec.y * world_vec.y);
+            if (len > 0) {
+                const dx = (world_vec.x / len) * speed;
+                const dy = (world_vec.y / len) * speed;
+
+                state.position.x += dx;
+                state.position.y += dy;
+                state.rotation = Math.atan2(dy, dx) * 180 / Math.PI;
+            }
         }
     };
 
@@ -648,9 +669,10 @@ const useCharacter = () => {
         if (!state.position) return;
 
         const carSize = 64;
+        const isoPos = math.toIsometric(state.position);
 
         ctx.save();
-        ctx.translate(state.position.x, state.position.y);
+        ctx.translate(isoPos.x, isoPos.y);
         ctx.rotate(state.rotation * Math.PI / 180);
 
         if (state.image) {
@@ -810,8 +832,10 @@ const App: React.FC = () => {
         ctx.lineCap = "round";
         ctx.beginPath();
         normalRoads.forEach(seg => {
-            ctx.moveTo(seg.r.start.x, seg.r.start.y);
-            ctx.lineTo(seg.r.end.x, seg.r.end.y);
+            const isoStart = math.toIsometric(seg.r.start);
+            const isoEnd = math.toIsometric(seg.r.end);
+            ctx.moveTo(isoStart.x, isoStart.y);
+            ctx.lineTo(isoEnd.x, isoEnd.y);
         });
         ctx.stroke();
 
@@ -821,8 +845,10 @@ const App: React.FC = () => {
         ctx.lineCap = "round";
         ctx.beginPath();
         highways.forEach(seg => {
-            ctx.moveTo(seg.r.start.x, seg.r.start.y);
-            ctx.lineTo(seg.r.end.x, seg.r.end.y);
+            const isoStart = math.toIsometric(seg.r.start);
+            const isoEnd = math.toIsometric(seg.r.end);
+            ctx.moveTo(isoStart.x, isoStart.y);
+            ctx.lineTo(isoEnd.x, isoEnd.y);
         });
         ctx.stroke();
         
@@ -843,8 +869,9 @@ const App: React.FC = () => {
         if (characterState.current.position) {
             const { width: canvasWidth, height: canvasHeight } = canvasSize;
             const scale = transformRef.current.scale;
-            transformRef.current.x = canvasWidth / 2 - characterState.current.position.x * scale;
-            transformRef.current.y = canvasHeight / 2 - characterState.current.position.y * scale;
+            const isoPos = math.toIsometric(characterState.current.position);
+            transformRef.current.x = canvasWidth / 2 - isoPos.x * scale;
+            transformRef.current.y = canvasHeight / 2 - isoPos.y * scale;
         }
 
         draw();
@@ -876,7 +903,7 @@ const App: React.FC = () => {
         // uniformly based on the canvas dimensions.
         const smallerDimension = Math.min(canvasWidth, canvasHeight);
         // This sets the scale so that a world view of 730 units (approx. 20 meters) fits into the smaller dimension.
-        transformRef.current.scale = smallerDimension / 730;
+        transformRef.current.scale = smallerDimension / 5000;
 
         if (segments.length === 0) {
             transformRef.current.x = canvasWidth / 2;
