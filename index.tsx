@@ -645,7 +645,7 @@ const useCharacter = (segments: Segment[]) => {
         ctx.restore();
     };
 
-    return { updateCharacter, drawCharacter };
+    return { updateCharacter, drawCharacter, characterState };
 };
 
 
@@ -659,12 +659,10 @@ const App: React.FC = () => {
     
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const transformRef = useRef({ x: 0, y: 0, scale: 1 });
-    const isPanningRef = useRef(false);
-    const lastMousePosRef = useRef<Point>({ x: 0, y: 0 });
     const animationFrameId = useRef<number | null>(null);
     const lastTimestamp = useRef(0);
 
-    const { updateCharacter, drawCharacter } = useCharacter(segments);
+    const { updateCharacter, drawCharacter, characterState } = useCharacter(segments);
 
     const draw = useCallback(() => {
         const canvas = canvasRef.current;
@@ -717,10 +715,18 @@ const App: React.FC = () => {
         lastTimestamp.current = timestamp;
 
         updateCharacter(deltaTime);
+
+        if (characterState.current.position) {
+            const { width: canvasWidth, height: canvasHeight } = canvasSize;
+            const scale = transformRef.current.scale;
+            transformRef.current.x = canvasWidth / 2 - characterState.current.position.x * scale;
+            transformRef.current.y = canvasHeight / 2 - characterState.current.position.y * scale;
+        }
+
         draw();
 
         animationFrameId.current = requestAnimationFrame(gameLoop);
-    }, [draw, updateCharacter]);
+    }, [draw, updateCharacter, canvasSize, characterState]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -741,32 +747,14 @@ const App: React.FC = () => {
         const { width: canvasWidth, height: canvasHeight } = canvasSize;
         if (canvasWidth === 0 || canvasHeight === 0) return;
 
+        // Set a fixed scale instead of calculating it.
+        transformRef.current.scale = 0.5;
+
         if (segments.length === 0) {
-            transformRef.current = { x: canvasWidth / 2, y: canvasHeight / 2, scale: 1 };
-            draw();
-            return;
+            transformRef.current.x = canvasWidth / 2;
+            transformRef.current.y = canvasHeight / 2;
         }
-
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const seg of segments) {
-            minX = Math.min(minX, seg.r.start.x, seg.r.end.x);
-            minY = Math.min(minY, seg.r.start.y, seg.r.end.y);
-            maxX = Math.max(maxX, seg.r.start.x, seg.r.end.x);
-            maxY = Math.max(maxY, seg.r.start.y, seg.r.end.y);
-        }
-
-        const networkWidth = (maxX - minX) || 1;
-        const networkHeight = (maxY - minY) || 1;
-        const networkCenterX = minX + networkWidth / 2;
-        const networkCenterY = minY + networkHeight / 2;
-
-        const padding = 0.9;
-        const scale = Math.min(canvasWidth / networkWidth, canvasHeight / networkHeight) * padding;
         
-        const tx = canvasWidth / 2 - networkCenterX * scale;
-        const ty = canvasHeight / 2 - networkCenterY * scale;
-        
-        transformRef.current = { scale, x: tx, y: ty };
         draw();
     }, [segments, canvasSize, draw]);
 
@@ -788,46 +776,6 @@ const App: React.FC = () => {
             setSegments(result.segments);
             setIsLoading(false);
         }, 50);
-    };
-
-    const onMouseDown = (e: React.MouseEvent) => {
-        isPanningRef.current = true;
-        lastMousePosRef.current = { x: e.clientX, y: e.clientY };
-    };
-
-    const onMouseUp = () => {
-        isPanningRef.current = false;
-    };
-
-    const onMouseMove = (e: React.MouseEvent) => {
-        if (!isPanningRef.current) return;
-        const dx = e.clientX - lastMousePosRef.current.x;
-        const dy = e.clientY - lastMousePosRef.current.y;
-        transformRef.current.x += dx;
-        transformRef.current.y += dy;
-        lastMousePosRef.current = { x: e.clientX, y: e.clientY };
-        draw();
-    };
-    
-    const onWheel = (e: React.WheelEvent) => {
-        e.preventDefault();
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const rect = canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-
-        const zoomFactor = 1.1;
-        const newScale = e.deltaY < 0 ? transformRef.current.scale * zoomFactor : transformRef.current.scale / zoomFactor;
-        
-        const worldX = (mouseX - transformRef.current.x) / transformRef.current.scale;
-        const worldY = (mouseY - transformRef.current.y) / transformRef.current.scale;
-        
-        transformRef.current.scale = newScale;
-        transformRef.current.x = mouseX - worldX * newScale;
-        transformRef.current.y = mouseY - worldY * newScale;
-        
-        draw();
     };
 
     useEffect(() => {
@@ -862,11 +810,6 @@ const App: React.FC = () => {
                 )}
                 <canvas
                     ref={canvasRef}
-                    onMouseDown={onMouseDown}
-                    onMouseUp={onMouseUp}
-                    onMouseLeave={onMouseUp}
-                    onMouseMove={onMouseMove}
-                    onWheel={onWheel}
                 />
             </div>
         </div>
