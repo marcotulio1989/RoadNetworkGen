@@ -7,6 +7,8 @@ type Road = { start: Point; end: Point };
 type Q = { highway?: boolean; severed?: boolean };
 type Bounds = { x: number; y: number; width: number; height: number };
 type QuadtreeObject = Bounds & { o: Segment };
+type Block = Point[];
+type Lot = Point[];
 
 // --- DEPENDENCY IMPLEMENTATIONS ---
 
@@ -246,6 +248,15 @@ const math = {
             length2: l2,
             pointOnLine
         };
+    },
+    polygonArea: (polygon: Point[]): number => {
+        let area = 0;
+        for (let i = 0; i < polygon.length; i++) {
+            const j = (i + 1) % polygon.length;
+            area += polygon[i].x * polygon[j].y;
+            area -= polygon[j].x * polygon[i].y;
+        }
+        return Math.abs(area / 2);
     }
 };
 
@@ -576,6 +587,174 @@ function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
     return { segments, logs };
 }
 
+// --- BLOCK GENERATION LOGIC ---
+
+function findBlocks(segments: Segment[]): Block[] {
+    const intersections = new Map<string, Segment[]>();
+    const pointToString = (p: Point) => `${p.x},${p.y}`;
+
+    // 1. Populate intersections map
+    segments.forEach(segment => {
+        const startKey = pointToString(segment.r.start);
+        const endKey = pointToString(segment.r.end);
+        if (!intersections.has(startKey)) intersections.set(startKey, []);
+        if (!intersections.has(endKey)) intersections.set(endKey, []);
+        intersections.get(startKey)!.push(segment);
+        intersections.get(endKey)!.push(segment);
+    });
+
+    const blocks: Block[] = [];
+    const visited = new Set<string>(); // e.g., "segmentId-start" or "segmentId-end"
+
+    for (const segment of segments) {
+        for (const startNode of [segment.r.start, segment.r.end]) {
+            const startNodeKey = pointToString(startNode);
+            const edgeId = `${segment.id}-${startNodeKey}`;
+
+            if (visited.has(edgeId)) continue;
+
+            const path: Point[] = [];
+            let currentSegment = segment;
+            let currentNode = startNode;
+            let isLoop = true;
+
+            while (true) {
+                const currentEdgeId = `${currentSegment.id}-${pointToString(currentNode)}`;
+                if (visited.has(currentEdgeId)) {
+                    isLoop = false;
+                    break;
+                }
+                visited.add(currentEdgeId);
+                path.push(currentNode);
+
+                const nextNode = math.equalV(currentSegment.r.start, currentNode) ? currentSegment.r.end : currentSegment.r.start;
+
+                const candidates = intersections.get(pointToString(nextNode));
+                if (!candidates || candidates.length < 2) {
+                    isLoop = false;
+                    break;
+                }
+
+                // Sort candidates by angle
+                const incomingAngle = currentSegment.dir() + (math.equalV(nextNode, currentSegment.r.start) ? 180 : 0);
+
+                let bestCandidate: Segment | null = null;
+                let minAngleDiff = Infinity;
+
+                for (const candidate of candidates) {
+                    if (candidate.id === currentSegment.id) continue;
+
+                    const candidateAngle = candidate.dir() + (math.equalV(nextNode, candidate.r.end) ? 180 : 0);
+                    let angleDiff = (candidateAngle - incomingAngle);
+                    while (angleDiff <= 0) angleDiff += 360;
+
+                    if (angleDiff < minAngleDiff) {
+                        minAngleDiff = angleDiff;
+                        bestCandidate = candidate;
+                    }
+                }
+
+                if (!bestCandidate) {
+                    isLoop = false;
+                    break;
+                }
+
+                currentSegment = bestCandidate;
+                currentNode = nextNode;
+
+                if (currentSegment.id === segment.id && math.equalV(currentNode, startNode)) {
+                    break; // Completed a loop
+                }
+                if (path.length > segments.length) { // Failsafe
+                    isLoop = false;
+                    break;
+                }
+            }
+
+            if (isLoop && path.length > 2) {
+                blocks.push(path);
+            }
+        }
+    }
+
+    return blocks;
+}
+
+function subdivideBlock(block: Block, maxArea: number): Lot[] {
+    const area = math.polygonArea(block);
+    if (area < maxArea) {
+        return [block];
+    }
+
+    // Find longest edge
+    let longestEdgeIndex = -1;
+    let maxLen = -1;
+    for (let i = 0; i < block.length; i++) {
+        const p1 = block[i];
+        const p2 = block[(i + 1) % block.length];
+        const len = math.length(p1, p2);
+        if (len > maxLen) {
+            maxLen = len;
+            longestEdgeIndex = i;
+        }
+    }
+
+    const p1 = block[longestEdgeIndex];
+    const p2 = block[(longestEdgeIndex + 1) % block.length];
+    const longestEdgeVec = math.subtractPoints(p2, p1);
+    const longestEdgeAngle = Math.atan2(longestEdgeVec.y, longestEdgeVec.x);
+
+    // Find most parallel edge
+    let parallelEdgeIndex = -1;
+    let minAngleDiff = Infinity;
+
+    for (let i = 0; i < block.length; i++) {
+        if (i === longestEdgeIndex) continue;
+        const pp1 = block[i];
+        const pp2 = block[(i + 1) % block.length];
+        const currentEdgeVec = math.subtractPoints(pp2, pp1);
+        const currentEdgeAngle = Math.atan2(currentEdgeVec.y, currentEdgeVec.x);
+
+        const angleDiff = Math.abs(longestEdgeAngle - currentEdgeAngle);
+        const parallelDiff = Math.min(angleDiff, Math.PI - angleDiff);
+
+        if (parallelDiff < minAngleDiff) {
+            minAngleDiff = parallelDiff;
+            parallelEdgeIndex = i;
+        }
+    }
+
+    // Threshold for "approximately parallel" (e.g., 20 degrees)
+    if (minAngleDiff > (20 * Math.PI / 180)) {
+        return [block];
+    }
+
+    // Split the polygon
+    const mid1 = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const p3 = block[parallelEdgeIndex];
+    const p4 = block[(parallelEdgeIndex + 1) % block.length];
+    const mid2 = { x: (p3.x + p4.x) / 2, y: (p3.y + p4.y) / 2 };
+
+    const lot1: Block = [];
+    const lot2: Block = [];
+
+    lot1.push(mid1, mid2);
+    let i = (parallelEdgeIndex + 1) % block.length;
+    while(i !== (longestEdgeIndex + 1) % block.length) {
+        lot1.push(block[i]);
+        i = (i + 1) % block.length;
+    }
+
+    lot2.push(mid2, mid1);
+    i = (longestEdgeIndex + 1) % block.length;
+    while(i !== (parallelEdgeIndex + 1) % block.length) {
+        lot2.push(block[i]);
+        i = (i + 1) % block.length;
+    }
+
+    return [...subdivideBlock(lot1, maxArea), ...subdivideBlock(lot2, maxArea)];
+}
+
 
 // --- CHARACTER LOGIC ---
 const useCharacter = () => {
@@ -696,6 +875,8 @@ const useCharacter = () => {
 const App: React.FC = () => {
     const [seed, setSeed] = useState<string>('city');
     const [segments, setSegments] = useState<Segment[]>([]);
+    const [blocks, setBlocks] = useState<Block[]>([]);
+    const [lots, setLots] = useState<Lot[]>([]);
     const [logs, setLogs] = useState<string[]>([]);
     const [charPos, setCharPos] = useState<Point>({ x: 0, y: 0 });
     const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -857,6 +1038,21 @@ const App: React.FC = () => {
             });
         };
 
+        ctx.fillStyle = "rgba(150, 150, 255, 0.6)"; // Blue for lots
+        ctx.strokeStyle = "rgba(100, 100, 200, 0.8)";
+        ctx.lineWidth = 100;
+        lots.forEach(lot => {
+            const isoLot = lot.map(p => math.toIsometric(p));
+            ctx.beginPath();
+            ctx.moveTo(isoLot[0].x, isoLot[0].y);
+            for (let i = 1; i < isoLot.length; i++) {
+                ctx.lineTo(isoLot[i].x, isoLot[i].y);
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        });
+
         drawRoadsAsPolygons(highways, 'var(--highway-color)');
         drawRoadsAsPolygons(normalRoads, 'var(--road-color)');
         
@@ -865,7 +1061,7 @@ const App: React.FC = () => {
         ctx.restore();
 
         drawMinimap();
-    }, [segments, canvasSize, drawCharacter, drawMinimap]);
+    }, [segments, blocks, lots, canvasSize, drawCharacter, drawMinimap]);
 
     const gameLoop = useCallback((timestamp: number) => {
         const deltaTime = (timestamp - lastTimestamp.current) / 1000;
@@ -937,7 +1133,11 @@ const App: React.FC = () => {
         setTimeout(() => {
             const currentSeed = seed || Date.now().toString();
             const result = generate(currentSeed);
+            const foundBlocks = findBlocks(result.segments);
+            const allLots = foundBlocks.flatMap(block => subdivideBlock(block, 2000000));
             setSegments(result.segments);
+            setBlocks(foundBlocks);
+            setLots(allLots);
             setLogs(result.logs);
             setIsLoading(false);
         }, 50);
