@@ -207,6 +207,18 @@ const math = {
     cosDegrees: (deg: number): number => Math.cos(deg * Math.PI / 180),
     sinDegrees: (deg: number): number => Math.sin(deg * Math.PI / 180),
     toDegrees: (rad: number): number => rad * 180 / Math.PI,
+    toIsometric: (p: Point): Point => {
+        return {
+            x: p.x - p.y,
+            y: (p.x + p.y) / 2,
+        };
+    },
+    fromIsometric: (p: Point): Point => {
+        return {
+            x: p.y + p.x / 2,
+            y: p.y - p.x / 2,
+        };
+    },
     doLineSegmentsIntersect: (p: Point, p2: Point, q: Point, q2: Point, touchIsIntersect = false): { t: number, point: Point } | null => {
         const r = { x: p2.x - p.x, y: p2.y - p.y };
         const s = { x: q2.x - q.x, y: q2.y - q.y };
@@ -570,7 +582,7 @@ const useCharacter = () => {
     const [isImageLoaded, setIsImageLoaded] = useState(false);
     const characterState = useRef({
         position: { x: 0, y: 0 } as Point,
-        speed: 200, // units per second
+        speed: 400, // units per second
         image: null as HTMLImageElement | null,
         rotation: 0,
     });
@@ -619,27 +631,36 @@ const useCharacter = () => {
             return;
         }
 
-        const distance = state.speed * deltaTime;
-        let dx = 0;
-        let dy = 0;
+        const speed = state.speed * deltaTime;
+        let screen_dx = 0;
+        let screen_dy = 0;
 
         if (keysPressed.ArrowUp) {
-            dy -= distance;
+            screen_dy = -1;
         }
         if (keysPressed.ArrowDown) {
-            dy += distance;
+            screen_dy = 1;
         }
         if (keysPressed.ArrowLeft) {
-            dx -= distance;
+            screen_dx = -1;
         }
         if (keysPressed.ArrowRight) {
-            dx += distance;
+            screen_dx = 1;
         }
 
-        if (dx !== 0 || dy !== 0) {
-            state.position.x += dx;
-            state.position.y += dy;
-            state.rotation = Math.atan2(dy, dx) * 180 / Math.PI;
+        if (screen_dx !== 0 || screen_dy !== 0) {
+            const screen_vec = { x: screen_dx, y: screen_dy };
+            const world_vec = math.fromIsometric(screen_vec);
+
+            const len = Math.sqrt(world_vec.x * world_vec.x + world_vec.y * world_vec.y);
+            if (len > 0) {
+                const dx = (world_vec.x / len) * speed;
+                const dy = (world_vec.y / len) * speed;
+
+                state.position.x += dx;
+                state.position.y += dy;
+                state.rotation = Math.atan2(dy, dx) * 180 / Math.PI;
+            }
         }
     };
 
@@ -648,9 +669,10 @@ const useCharacter = () => {
         if (!state.position) return;
 
         const carSize = 64;
+        const isoPos = math.toIsometric(state.position);
 
         ctx.save();
-        ctx.translate(state.position.x, state.position.y);
+        ctx.translate(isoPos.x, isoPos.y);
         ctx.rotate(state.rotation * Math.PI / 180);
 
         if (state.image) {
@@ -686,6 +708,21 @@ const App: React.FC = () => {
     const lastTimestamp = useRef(0);
 
     const { updateCharacter, drawCharacter, characterState } = useCharacter();
+
+    const intersections = React.useMemo(() => {
+        const pointMap = new Map<string, Segment[]>();
+        segments.forEach(seg => {
+            const startKey = `${seg.r.start.x},${seg.r.start.y}`;
+            const endKey = `${seg.r.end.x},${seg.r.end.y}`;
+
+            if (!pointMap.has(startKey)) pointMap.set(startKey, []);
+            pointMap.get(startKey)!.push(seg);
+
+            if (!pointMap.has(endKey)) pointMap.set(endKey, []);
+            pointMap.get(endKey)!.push(seg);
+        });
+        return pointMap;
+    }, [segments]);
 
     const drawMinimap = useCallback(() => {
         const minimapCanvas = minimapCanvasRef.current;
@@ -804,34 +841,101 @@ const App: React.FC = () => {
         const normalRoads = segments.filter(s => !s.q.highway);
         const highways = segments.filter(s => s.q.highway);
 
-        // Draw normal roads
-        ctx.strokeStyle = 'var(--road-color)';
-        ctx.lineWidth = defaultConfig.DEFAULT_SEGMENT_WIDTH;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        normalRoads.forEach(seg => {
-            ctx.moveTo(seg.r.start.x, seg.r.start.y);
-            ctx.lineTo(seg.r.end.x, seg.r.end.y);
-        });
-        ctx.stroke();
+        const drawRoadsAsPolygons = (roads: Segment[], color: string) => {
+            ctx.fillStyle = color;
+            roads.forEach(seg => {
+                const vec = math.subtractPoints(seg.r.end, seg.r.start);
+                const length = Math.sqrt(vec.x * vec.x + vec.y * vec.y);
+                if (length === 0) return;
 
-        // Draw highways
-        ctx.strokeStyle = 'var(--highway-color)';
-        ctx.lineWidth = defaultConfig.HIGHWAY_SEGMENT_WIDTH;
-        ctx.lineCap = "round";
-        ctx.beginPath();
-        highways.forEach(seg => {
-            ctx.moveTo(seg.r.start.x, seg.r.start.y);
-            ctx.lineTo(seg.r.end.x, seg.r.end.y);
-        });
-        ctx.stroke();
+                const perp = { x: -vec.y / length, y: vec.x / length };
+
+                const halfWidth = seg.width / 2;
+
+                const p1 = { x: seg.r.start.x + perp.x * halfWidth, y: seg.r.start.y + perp.y * halfWidth };
+                const p2 = { x: seg.r.start.x - perp.x * halfWidth, y: seg.r.start.y - perp.y * halfWidth };
+                const p3 = { x: seg.r.end.x - perp.x * halfWidth, y: seg.r.end.y - perp.y * halfWidth };
+                const p4 = { x: seg.r.end.x + perp.x * halfWidth, y: seg.r.end.y + perp.y * halfWidth };
+
+                const iso_p1 = math.toIsometric(p1);
+                const iso_p2 = math.toIsometric(p2);
+                const iso_p3 = math.toIsometric(p3);
+                const iso_p4 = math.toIsometric(p4);
+
+                ctx.beginPath();
+                ctx.moveTo(iso_p1.x, iso_p1.y);
+                ctx.lineTo(iso_p2.x, iso_p2.y);
+                ctx.lineTo(iso_p3.x, iso_p3.y);
+                ctx.lineTo(iso_p4.x, iso_p4.y);
+                ctx.closePath();
+                ctx.fill();
+            });
+        };
+
+        drawRoadsAsPolygons(highways, 'var(--highway-color)');
+        drawRoadsAsPolygons(normalRoads, 'var(--road-color)');
         
+        drawIntersections(ctx);
+
         drawCharacter(ctx, transformRef.current);
 
         ctx.restore();
 
         drawMinimap();
-    }, [segments, canvasSize, drawCharacter, drawMinimap]);
+    }, [segments, canvasSize, drawCharacter, drawMinimap, intersections]);
+
+    const drawIntersections = (ctx: CanvasRenderingContext2D) => {
+        intersections.forEach((segments, key) => {
+            const [x, y] = key.split(',').map(Number);
+            const centerPoint = { x, y };
+
+            if (segments.length === 1) {
+                // Dead end: draw a rounded cap
+                const seg = segments[0];
+                ctx.fillStyle = seg.q.highway ? 'var(--highway-color)' : 'var(--road-color)';
+                const isoCenter = math.toIsometric(centerPoint);
+                ctx.beginPath();
+                ctx.arc(isoCenter.x, isoCenter.y, seg.width / 2, 0, 2 * Math.PI);
+                ctx.fill();
+            } else {
+                // Junction: draw a polygon
+                const points = [];
+                segments.forEach(seg => {
+                    const isStart = math.equalV(seg.r.start, centerPoint);
+                    const p1 = isStart ? seg.r.start : seg.r.end;
+                    const p2 = isStart ? seg.r.end : seg.r.start;
+
+                    const vec = math.subtractPoints(p2, p1);
+                    const length = Math.sqrt(vec.x * vec.x + vec.y * vec.y);
+                    if (length === 0) return;
+                    const perp = { x: -vec.y / length, y: vec.x / length };
+
+                    const halfWidth = seg.width / 2;
+                    points.push({ x: p1.x + perp.x * halfWidth, y: p1.y + perp.y * halfWidth });
+                    points.push({ x: p1.x - perp.x * halfWidth, y: p1.y - perp.y * halfWidth });
+                });
+
+                points.sort((a, b) => {
+                    const angleA = Math.atan2(a.y - centerPoint.y, a.x - centerPoint.x);
+                    const angleB = Math.atan2(b.y - centerPoint.y, b.x - centerPoint.x);
+                    return angleA - angleB;
+                });
+
+                const hasHighway = segments.some(s => s.q.highway);
+                ctx.fillStyle = hasHighway ? 'var(--highway-color)' : 'var(--road-color)';
+
+                const isoPoints = points.map(p => math.toIsometric(p));
+
+                ctx.beginPath();
+                ctx.moveTo(isoPoints[0].x, isoPoints[0].y);
+                for (let i = 1; i < isoPoints.length; i++) {
+                    ctx.lineTo(isoPoints[i].x, isoPoints[i].y);
+                }
+                ctx.closePath();
+                ctx.fill();
+            }
+        });
+    };
 
     const gameLoop = useCallback((timestamp: number) => {
         const deltaTime = (timestamp - lastTimestamp.current) / 1000;
@@ -843,8 +947,9 @@ const App: React.FC = () => {
         if (characterState.current.position) {
             const { width: canvasWidth, height: canvasHeight } = canvasSize;
             const scale = transformRef.current.scale;
-            transformRef.current.x = canvasWidth / 2 - characterState.current.position.x * scale;
-            transformRef.current.y = canvasHeight / 2 - characterState.current.position.y * scale;
+            const isoPos = math.toIsometric(characterState.current.position);
+            transformRef.current.x = canvasWidth / 2 - isoPos.x * scale;
+            transformRef.current.y = canvasHeight / 2 - isoPos.y * scale;
         }
 
         draw();
@@ -876,7 +981,7 @@ const App: React.FC = () => {
         // uniformly based on the canvas dimensions.
         const smallerDimension = Math.min(canvasWidth, canvasHeight);
         // This sets the scale so that a world view of 730 units (approx. 20 meters) fits into the smaller dimension.
-        transformRef.current.scale = smallerDimension / 730;
+        transformRef.current.scale = smallerDimension / 1095;
 
         if (segments.length === 0) {
             transformRef.current.x = canvasWidth / 2;
