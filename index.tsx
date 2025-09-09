@@ -688,13 +688,14 @@ function findCityBlocks(segments: Segment[]): Point[][] {
 
 function generateAllBuildings(blocks: Point[][]): Building[] {
     const allBuildings: Building[] = [];
-    const buildingMinSize = 150;
-    const buildingMaxSize = 400;
+    const buildingMinSize = 80;
+    const buildingMaxSize = 150;
+    const buildingSpacing = 20;
 
     for (const block of blocks) {
         if (block.length < 3) continue;
 
-        // 1. Find bounding box of the block
+        // 1. Find bounding box of the block and inset it
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         block.forEach(p => {
             minX = Math.min(minX, p.x);
@@ -703,35 +704,62 @@ function generateAllBuildings(blocks: Point[][]): Building[] {
             maxY = Math.max(maxY, p.y);
         });
 
-        const blockWidth = maxX - minX;
-        const blockHeight = maxY - minY;
+        const roadMargin = defaultConfig.DEFAULT_SEGMENT_WIDTH / 2 + 50; // half road width + sidewalk
+        minX += roadMargin;
+        minY += roadMargin;
+        maxX -= roadMargin;
+        maxY -= roadMargin;
 
-        if (blockWidth < buildingMinSize * 1.5 || blockHeight < buildingMinSize * 1.5) {
-            continue; // Skip blocks that are too small
+        if (maxX - minX < buildingMinSize || maxY - minY < buildingMinSize) {
+            continue;
         }
 
-        // 2. Decide on building size
-        const buildingWidth = Math.max(buildingMinSize, Math.random() * Math.min(blockWidth * 0.5, buildingMaxSize));
-        const buildingDepth = Math.max(buildingMinSize, Math.random() * Math.min(blockHeight * 0.5, buildingMaxSize));
+        // 2. Tile buildings within the inset bounding box
+        let currentY = minY;
+        while (currentY < maxY) {
+            const maxDepth = Math.min(maxY - currentY, buildingMaxSize);
+            if (maxDepth < buildingMinSize) break;
+            const buildingDepth = buildingMinSize + Math.random() * (maxDepth - buildingMinSize);
 
-        // 3. Find a random position within the block's bounding box
-        const x = minX + (blockWidth - buildingWidth) / 2;
-        const y = minY + (blockHeight - buildingDepth) / 2;
+            let currentX = minX;
+            while (currentX < maxX) {
+                const maxWidth = Math.min(maxX - currentX, buildingMaxSize);
+                if (maxWidth < buildingMinSize) break;
+                const buildingWidth = buildingMinSize + Math.random() * (maxWidth - buildingMinSize);
 
-        // For now, we don't check if the building is actually inside the polygon,
-        // the bounding box placement is good enough for a first version.
+                const footprint: Point[] = [
+                    { x: currentX, y: currentY },
+                    { x: currentX + buildingWidth, y: currentY },
+                    { x: currentX + buildingWidth, y: currentY + buildingDepth },
+                    { x: currentX, y: currentY + buildingDepth },
+                ];
 
-        const footprint: Point[] = [
-            { x: x, y: y },
-            { x: x + buildingWidth, y: y },
-            { x: x + buildingWidth, y: y + buildingDepth },
-            { x: x, y: y + buildingDepth },
-        ];
+                // A simple check to ensure the building center is inside the polygon.
+                // This is not perfect but better than nothing.
+                const centerX = currentX + buildingWidth / 2;
+                const centerY = currentY + buildingDepth / 2;
 
-        allBuildings.push({
-            footprint,
-            height: Math.random() * 800 + 200, // Random height
-        });
+                // Point in polygon test
+                let isInside = false;
+                for (let i = 0, j = block.length - 1; i < block.length; j = i++) {
+                    const xi = block[i].x, yi = block[i].y;
+                    const xj = block[j].x, yj = block[j].y;
+                    const intersect = ((yi > centerY) !== (yj > centerY))
+                        && (centerX < (xj - xi) * (centerY - yi) / (yj - yi) + xi);
+                    if (intersect) isInside = !isInside;
+                }
+
+                if (isInside) {
+                    allBuildings.push({
+                        footprint,
+                        height: Math.random() * 600 + 100,
+                    });
+                }
+
+                currentX += buildingWidth + buildingSpacing;
+            }
+            currentY += buildingDepth + buildingSpacing;
+        }
     }
 
     console.log(`Generated ${allBuildings.length} buildings.`);
