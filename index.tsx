@@ -868,6 +868,7 @@ const App: React.FC = () => {
     const [charPos, setCharPos] = useState<Point>({ x: 0, y: 0 });
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+    const [roadColors, setRoadColors] = useState({ highway: '', road: '' });
     
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const minimapCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -1024,6 +1025,7 @@ const App: React.FC = () => {
             };
 
             const drawIntersections = () => {
+                if (!roadColors.highway || !roadColors.road) return;
                 junctions.forEach(junction => {
                     if (junction.segments.length < 2) return;
 
@@ -1037,17 +1039,23 @@ const App: React.FC = () => {
                     const isoP = math.toIsometric(junction.point);
                     const radius = widestSegment.width / 2;
 
-                    ctx.fillStyle = widestSegment.q.highway ? 'var(--highway-color)' : 'var(--road-color)';
+                    ctx.fillStyle = widestSegment.q.highway ? roadColors.highway : roadColors.road;
 
+                    ctx.save();
+                    ctx.translate(isoP.x, isoP.y);
+                    ctx.scale(1, 0.5);
                     ctx.beginPath();
-                    ctx.arc(isoP.x, isoP.y, radius, 0, 2 * Math.PI);
+                    ctx.arc(0, 0, radius, 0, 2 * Math.PI);
                     ctx.fill();
+                    ctx.restore();
                 });
             };
 
-            drawRoadsAsPolygons(highways, 'var(--highway-color)');
-            drawRoadsAsPolygons(normalRoads, 'var(--road-color)');
-            drawIntersections();
+            if (roadColors.highway && roadColors.road) {
+                drawRoadsAsPolygons(highways, roadColors.highway);
+                drawRoadsAsPolygons(normalRoads, roadColors.road);
+                drawIntersections();
+            }
         };
 
         const drawBuildingsAndCharacter = () => {
@@ -1122,7 +1130,7 @@ const App: React.FC = () => {
         ctx.restore();
 
         drawMinimap();
-    }, [segments, buildings, canvasSize, drawCharacter, drawMinimap, characterState, junctions]);
+    }, [segments, buildings, canvasSize, drawCharacter, drawMinimap, characterState, junctions, roadColors]);
 
     const gameLoop = useCallback((timestamp: number) => {
         const deltaTime = (timestamp - lastTimestamp.current) / 1000;
@@ -1215,7 +1223,13 @@ const App: React.FC = () => {
     };
 
     useEffect(() => {
-      handleGenerate();
+        const style = getComputedStyle(document.documentElement);
+        setRoadColors({
+            highway: style.getPropertyValue('--highway-color').trim(),
+            road: style.getPropertyValue('--road-color').trim(),
+        });
+
+        handleGenerate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
