@@ -207,13 +207,57 @@ const math = {
     cosDegrees: (deg: number): number => Math.cos(deg * Math.PI / 180),
     sinDegrees: (deg: number): number => Math.sin(deg * Math.PI / 180),
     toDegrees: (rad: number): number => rad * 180 / Math.PI,
+    onSegment: (p: Point, q: Point, r: Point): boolean => {
+        return q.x <= Math.max(p.x, r.x) && q.x >= Math.min(p.x, r.x) &&
+               q.y <= Math.max(p.y, r.y) && q.y >= Math.min(p.y, r.y);
+    },
     doLineSegmentsIntersect: (p: Point, p2: Point, q: Point, q2: Point, touchIsIntersect = false): { t: number, point: Point } | null => {
         const r = { x: p2.x - p.x, y: p2.y - p.y };
         const s = { x: q2.x - q.x, y: q2.y - q.y };
         const rxs = r.x * s.y - r.y * s.x;
         const qpxr = (q.x - p.x) * r.y - (q.y - p.y) * r.x;
-        if (rxs === 0 && qpxr === 0) return null; // Collinear
+
+        if (Math.abs(rxs) < 1e-9 && Math.abs(qpxr) < 1e-9) { // Collinear
+            const p_on_q = math.onSegment(q, p, q2);
+            const p2_on_q = math.onSegment(q, p2, q2);
+            const q_on_p = math.onSegment(p, q, p2);
+            const q2_on_p = math.onSegment(p, q2, p2);
+
+            if (p_on_q || p2_on_q || q_on_p || q2_on_p) {
+                const candidates: Point[] = [];
+                if (q_on_p) candidates.push(q);
+                if (q2_on_p) candidates.push(q2);
+                if (p_on_q) candidates.push(p);
+                if (p2_on_q) candidates.push(p2);
+
+                let best_t = Infinity;
+                let intersection_point: Point | null = null;
+
+                for (const pt of candidates) {
+                    const dx = p2.x - p.x;
+                    const dy = p2.y - p.y;
+                    let t;
+                    if (Math.abs(dx) > 1e-9) t = (pt.x - p.x) / dx;
+                    else if (Math.abs(dy) > 1e-9) t = (pt.y - p.y) / dy;
+                    else t = 0;
+
+                    const check = touchIsIntersect ? (v: number) => v >= 0 && v <= 1 : (v: number) => v > 0 && v < 1;
+                    if (check(t)) {
+                        if (t < best_t) {
+                            best_t = t;
+                            intersection_point = pt;
+                        }
+                    }
+                }
+                if (intersection_point) {
+                    return { t: best_t, point: intersection_point };
+                }
+            }
+            return null;
+        }
+
         if (rxs === 0 && qpxr !== 0) return null; // Parallel and non-intersecting
+
         const t = ((q.x - p.x) * s.y - (q.y - p.y) * s.x) / rxs;
         const u = ((q.x - p.x) * r.y - (q.y - p.y) * r.x) / rxs;
         const check = touchIsIntersect ? (v: number) => v >= 0 && v <= 1 : (v: number) => v > 0 && v < 1;
@@ -240,8 +284,8 @@ const math = {
 // --- ROAD GENERATION LOGIC ---
 
 const defaultConfig = {
-    HIGHWAY_SEGMENT_WIDTH: 80,
-    DEFAULT_SEGMENT_WIDTH: 40,
+    HIGHWAY_SEGMENT_WIDTH: 16,
+    DEFAULT_SEGMENT_WIDTH: 6,
     DEFAULT_SEGMENT_LENGTH: 500,
     HIGHWAY_SEGMENT_LENGTH: 500,
     MINIMUM_INTERSECTION_DEVIATION: 30,
@@ -290,7 +334,6 @@ class Segment {
         if (this.dirRevision !== this.roadRevision) {
             this.dirRevision = this.roadRevision;
             const vector = math.subtractPoints(this.r.end, this.r.start);
-            // standard math angle: 0 is +X, 90 is +Y
             const angleRad = Math.atan2(vector.y, vector.x);
             this.cachedDir = math.toDegrees(angleRad);
         }
@@ -312,34 +355,42 @@ class Segment {
         splitPart.setEnd(point);
         this.setStart(point);
 
-        splitPart.links.b = [...this.links.b];
-        splitPart.links.f = [...this.links.f];
+        const oldLinksB = [...this.links.b];
+        const oldLinksF = [...this.links.f];
+        splitPart.links.b = oldLinksB;
+        splitPart.links.f = oldLinksF;
 
-        const firstSplit = startIsBackwards ? splitPart : this;
-        const secondSplit = startIsBackwards ? this : splitPart;
-        const fixLinks = startIsBackwards ? splitPart.links.b : splitPart.links.f;
+        const fixLinks = startIsBackwards ? oldLinksB : oldLinksF;
 
         fixLinks.forEach(link => {
-            let index = link.links.b.indexOf(this);
-            if (index !== -1) {
-                link.links.b[index] = splitPart;
+            const b_index = link.links.b.indexOf(this);
+            if (b_index !== -1) {
+                link.links.b[b_index] = splitPart;
             } else {
-                index = link.links.f.indexOf(this);
-                if (index !== -1) {
-                    link.links.f[index] = splitPart;
+                const f_index = link.links.f.indexOf(this);
+                if (f_index !== -1) {
+                    link.links.f[f_index] = splitPart;
                 }
             }
         });
-        firstSplit.links.f = [segment, secondSplit];
-        secondSplit.links.b = [segment, firstSplit];
-        segment.links.f.push(firstSplit, secondSplit);
+
+        if (startIsBackwards) {
+            splitPart.links.f = [segment, this];
+            this.links.b = [segment, splitPart];
+        } else {
+            this.links.f = [segment, splitPart];
+            splitPart.links.b = [segment, this];
+        }
+
+        segment.links.f.push(this, splitPart);
     }
 
     startIsBackwards() {
         if (this.links.b.length > 0) {
           return math.equalV(this.links.b[0].r.start, this.r.start) ||
                  math.equalV(this.links.b[0].r.end, this.r.start);
-        } else if (this.links.f.length > 0) {
+        }
+        if (this.links.f.length > 0) {
           return math.equalV(this.links.f[0].r.start, this.r.end) ||
                  math.equalV(this.links.f[0].r.end, this.r.end);
         }
@@ -575,7 +626,7 @@ const App: React.FC = () => {
 
         // Draw normal roads
         ctx.strokeStyle = 'var(--road-color)';
-        ctx.lineWidth = 1.5 / scale;
+        ctx.lineWidth = defaultConfig.DEFAULT_SEGMENT_WIDTH / scale;
         ctx.beginPath();
         normalRoads.forEach(seg => {
             ctx.moveTo(seg.r.start.x, seg.r.start.y);
@@ -585,7 +636,7 @@ const App: React.FC = () => {
 
         // Draw highways
         ctx.strokeStyle = 'var(--highway-color)';
-        ctx.lineWidth = 4 / scale;
+        ctx.lineWidth = defaultConfig.HIGHWAY_SEGMENT_WIDTH / scale;
         ctx.beginPath();
         highways.forEach(seg => {
             ctx.moveTo(seg.r.start.x, seg.r.start.y);
