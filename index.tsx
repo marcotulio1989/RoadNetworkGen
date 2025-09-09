@@ -11,6 +11,10 @@ type Building = {
     footprint: Point[]; // The 4 corners of the rectangular base in world coordinates
     height: number;
 };
+type Junction = {
+    point: Point;
+    segments: Segment[];
+};
 
 // --- DEPENDENCY IMPLEMENTATIONS ---
 
@@ -580,20 +584,10 @@ function generate(seed: string, options: Partial<typeof defaultConfig> = {}) {
     return { segments, logs };
 }
 
-function findCityBlocks(segments: Segment[]): Point[][] {
-    if (segments.length === 0) {
-        return [];
-    }
-
-    type Junction = {
-        point: Point;
-        segments: Segment[];
-    };
-
+function findJunctions(segments: Segment[]): Map<string, Junction> {
     const junctions = new Map<string, Junction>();
     const pointToKey = (p: Point) => `${p.x},${p.y}`;
 
-    // 1. Build junctions map
     for (const seg of segments) {
         const startKey = pointToKey(seg.r.start);
         const endKey = pointToKey(seg.r.end);
@@ -608,6 +602,15 @@ function findCityBlocks(segments: Segment[]): Point[][] {
         junctions.get(startKey)!.segments.push(seg);
         junctions.get(endKey)!.segments.push(seg);
     }
+    return junctions;
+}
+
+function findCityBlocks(segments: Segment[], junctions: Map<string, Junction>): Point[][] {
+    if (segments.length === 0) {
+        return [];
+    }
+
+    const pointToKey = (p: Point) => `${p.x},${p.y}`;
 
     // 2. Sort segments at each junction by angle
     for (const junction of junctions.values()) {
@@ -859,6 +862,7 @@ const App: React.FC = () => {
     const [seed, setSeed] = useState<string>('city');
     const [segments, setSegments] = useState<Segment[]>([]);
     const [blocks, setBlocks] = useState<Point[][]>([]);
+    const [junctions, setJunctions] = useState<Map<string, Junction>>(new Map());
     const [buildings, setBuildings] = useState<Building[]>([]);
     const [logs, setLogs] = useState<string[]>([]);
     const [charPos, setCharPos] = useState<Point>({ x: 0, y: 0 });
@@ -1019,8 +1023,31 @@ const App: React.FC = () => {
                 });
             };
 
+            const drawIntersections = () => {
+                junctions.forEach(junction => {
+                    if (junction.segments.length < 2) return;
+
+                    let widestSegment = junction.segments[0];
+                    for (let i = 1; i < junction.segments.length; i++) {
+                        if (junction.segments[i].width > widestSegment.width) {
+                            widestSegment = junction.segments[i];
+                        }
+                    }
+
+                    const isoP = math.toIsometric(junction.point);
+                    const radius = widestSegment.width / 2;
+
+                    ctx.fillStyle = widestSegment.q.highway ? 'var(--highway-color)' : 'var(--road-color)';
+
+                    ctx.beginPath();
+                    ctx.arc(isoP.x, isoP.y, radius, 0, 2 * Math.PI);
+                    ctx.fill();
+                });
+            };
+
             drawRoadsAsPolygons(highways, 'var(--highway-color)');
             drawRoadsAsPolygons(normalRoads, 'var(--road-color)');
+            drawIntersections();
         };
 
         const drawBuildingsAndCharacter = () => {
@@ -1095,7 +1122,7 @@ const App: React.FC = () => {
         ctx.restore();
 
         drawMinimap();
-    }, [segments, buildings, canvasSize, drawCharacter, drawMinimap, characterState]);
+    }, [segments, buildings, canvasSize, drawCharacter, drawMinimap, characterState, junctions]);
 
     const gameLoop = useCallback((timestamp: number) => {
         const deltaTime = (timestamp - lastTimestamp.current) / 1000;
@@ -1168,7 +1195,9 @@ const App: React.FC = () => {
             const currentSeed = seed || Date.now().toString();
             const result = generate(currentSeed);
             setSegments(result.segments);
-            const blocks = findCityBlocks(result.segments);
+            const newJunctions = findJunctions(result.segments);
+            setJunctions(newJunctions);
+            const blocks = findCityBlocks(result.segments, newJunctions);
             setBlocks(blocks);
             const buildings = generateAllBuildings(blocks);
             setBuildings(buildings);
